@@ -1,0 +1,19 @@
+# Dependencies
+node_modules/
+
+# Production build output
+dist/
+dist-ssr/
+
+# Environment variables (Never push secrets!)
+.env
+.env.local
+
+# Mac system files
+.DS_Store
+
+# Editor/AI config
+.claude/
+
+# Ignore the live database, but keep the template
+data/db.json
