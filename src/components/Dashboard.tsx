@@ -2,10 +2,11 @@ import React, { useState, useRef, useEffect } from 'react';
 import { useAuth } from '../contexts/AuthContext';
 import { usePlaylists, api, triggerRefresh } from '../apiClient';
 import { useStore, accentAlpha } from '../store';
-import { Plus, Settings, FileAudio, Menu, Trash2, Eye, EyeOff, Keyboard, Search } from 'lucide-react';
+import { Plus, Settings, FileAudio, Menu, Trash2, Eye, EyeOff, Keyboard, Search, Info, ArrowUpCircle } from 'lucide-react';
 import PlaylistEditor from './PlaylistEditor';
 import CategoryList from './CategoryList';
 import Spotlight from './Spotlight';
+import AppInfo, { useVersionInfo } from './AppInfo';
 import { Logo } from './Logo';
 
 const ACCENT_PRESETS = [
@@ -37,6 +38,9 @@ export default function Dashboard() {
   const [newPlaylistName, setNewPlaylistName] = useState('');
   const [showSettings, setShowSettings] = useState(false);
   const [showShortcuts, setShowShortcuts] = useState(false);
+  const [showAppInfo, setShowAppInfo] = useState(false);
+  const [updateDismissed, setUpdateDismissed] = useState(false);
+  const versionInfo = useVersionInfo();
   const mod = /mac/i.test(navigator.platform) ? 'Cmd' : 'Ctrl';
 
   const handleSpotlightNavigate = (playlistId: string, category: string, channelId: string) => {
@@ -125,6 +129,25 @@ export default function Dashboard() {
     <div className="flex flex-col h-screen overflow-hidden bg-gray-100 dark:bg-[#121212] amoled:dark:bg-black font-sans">
 
       {/* ── Top App Bar ─────────────────────────────────────────────────── */}
+      {/* ── Update Banner ───────────────────────────────────────────────── */}
+      {versionInfo.updateAvailable && !updateDismissed && versionInfo.releaseUrl && (
+        <div className="shrink-0 z-30 flex items-center justify-center gap-3 px-4 py-2 text-sm font-medium text-white" style={{ backgroundColor: accentColor }}>
+          <ArrowUpCircle className="h-4 w-4 shrink-0" />
+          <span>A new version of m3u4me is available: <strong>v{versionInfo.latest}</strong></span>
+          <a
+            href={versionInfo.releaseUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="underline underline-offset-2 hover:opacity-80 transition-opacity"
+          >
+            View release
+          </a>
+          <button onClick={() => setUpdateDismissed(true)} className="ml-auto p-0.5 rounded hover:bg-white/20 transition-colors" aria-label="Dismiss">
+            <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12" /></svg>
+          </button>
+        </div>
+      )}
+
       <nav className="h-16 shrink-0 z-30 bg-white dark:bg-[#1e1e1e] amoled:dark:bg-[#0a0a0a] elev-4 flex items-center px-2 gap-1">
         <button
           onClick={() => setSidebarOpen(!isSidebarOpen)}
@@ -165,6 +188,16 @@ export default function Dashboard() {
           title="Keyboard shortcuts"
         >
           <Keyboard className="h-5 w-5" />
+        </button>
+
+        {/* App Info */}
+        <button
+          onClick={() => setShowAppInfo(true)}
+          className="md-btn p-2 rounded-full text-gray-600 dark:text-gray-400"
+          aria-label="About m3u4me"
+          title="About m3u4me"
+        >
+          <Info className="h-5 w-5" />
         </button>
 
         {/* Settings */}
@@ -485,6 +518,9 @@ export default function Dashboard() {
       )}
 
       <Spotlight onNavigate={handleSpotlightNavigate} />
+
+      {/* ── App Info Dialog ──────────────────────────────────────────────── */}
+      <AppInfo open={showAppInfo} onClose={() => setShowAppInfo(false)} />
 
       {/* ── Dialog: Keyboard Shortcuts ──────────────────────────────────── */}
       {showShortcuts && (

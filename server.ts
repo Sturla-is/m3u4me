@@ -105,6 +105,15 @@ async function startServer() {
 
   // --- API Routes ---
 
+  app.get("/api/version", (_req, res) => {
+    try {
+      const pkg = JSON.parse(fs.readFileSync(path.join(process.cwd(), "package.json"), "utf8"));
+      res.json({ version: pkg.version });
+    } catch {
+      res.json({ version: "0.0.0" });
+    }
+  });
+
   app.get("/api/playlists", (req, res) => {
     const db = readDb();
     res.json(db.playlists);
