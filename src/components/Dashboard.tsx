@@ -9,34 +9,20 @@ import Spotlight from './Spotlight';
 import AppInfo, { useVersionInfo } from './AppInfo';
 import { Logo } from './Logo';
 
-const ACCENT_PRESETS = [
-  '#1565C0', // Blue 800
-  '#283593', // Indigo 800
-  '#6A1B9A', // Purple 800
-  '#00695C', // Teal 800
-  '#2E7D32', // Green 800
-  '#C62828', // Red 800
-  '#AD1457', // Pink 800
-  '#37474F', // Blue Grey 800
-];
-
 export default function Dashboard() {
   const { user } = useAuth();
   const { playlists, loading } = usePlaylists();
   const {
     activePlaylistId, setActivePlaylistId,
     isSidebarOpen, setSidebarOpen,
-    isDarkMode, setDarkMode,
-    isAmoledMode, setAmoledMode,
-    logoBgColor, setLogoBgColor,
-    accentColor, setAccentColor,
+    accentColor,
     hideUrls, setHideUrls,
     undoEntry, setUndoEntry,
     setActiveCategory,
+    setShowSettings,
   } = useStore();
   const [isCreating, setIsCreating] = useState(false);
   const [newPlaylistName, setNewPlaylistName] = useState('');
-  const [showSettings, setShowSettings] = useState(false);
   const [showShortcuts, setShowShortcuts] = useState(false);
   const [showAppInfo, setShowAppInfo] = useState(false);
   const [updateDismissed, setUpdateDismissed] = useState(false);
@@ -201,114 +187,13 @@ export default function Dashboard() {
         </button>
 
         {/* Settings */}
-        <div className="relative ml-1">
-          <button
-            onClick={() => setShowSettings(s => !s)}
-            className="md-btn p-2 rounded-full text-gray-600 dark:text-gray-400"
-            aria-label="Settings"
-          >
-            <Settings className="h-5 w-5" />
-          </button>
-
-          {showSettings && (
-            <>
-              <div className="fixed inset-0 z-40" onClick={() => setShowSettings(false)} />
-              <div className="absolute right-0 top-full mt-1 w-72 bg-white dark:bg-[#272727] amoled:dark:bg-[#111] rounded elev-8 z-50 overflow-hidden">
-                <div className="px-4 py-3 border-b border-gray-200 dark:border-white/10">
-                  <p className="text-sm font-medium text-gray-900 dark:text-white">Settings</p>
-                </div>
-                <div className="p-4 space-y-5">
-
-                  {/* Dark mode */}
-                  <div className="flex items-center justify-between">
-                    <label className="text-sm text-gray-800 dark:text-gray-200">Dark Mode</label>
-                    <button
-                      role="switch" aria-checked={isDarkMode}
-                      onClick={() => { const v = !isDarkMode; setDarkMode(v); if (!v) setAmoledMode(false); }}
-                      className={`w-11 h-6 rounded-full relative transition-colors ${isDarkMode ? '' : 'bg-gray-300 dark:bg-gray-600'}`}
-                      style={isDarkMode ? { backgroundColor: accentColor } : undefined}
-                    >
-                      <span className={`absolute top-0.5 left-0.5 w-5 h-5 bg-white rounded-full shadow transition-transform ${isDarkMode ? 'translate-x-5' : ''}`} />
-                    </button>
-                  </div>
-
-                  {/* AMOLED */}
-                  <div className="flex items-center justify-between">
-                    <div>
-                      <label className="text-sm text-gray-800 dark:text-gray-200">AMOLED Dark</label>
-                      <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">Pure black for OLED displays</p>
-                    </div>
-                    <button
-                      role="switch" aria-checked={isAmoledMode}
-                      onClick={() => { const v = !isAmoledMode; setAmoledMode(v); if (v) setDarkMode(true); }}
-                      className={`w-11 h-6 rounded-full relative transition-colors ${isAmoledMode ? '' : 'bg-gray-300 dark:bg-gray-600'}`}
-                      style={isAmoledMode ? { backgroundColor: accentColor } : undefined}
-                    >
-                      <span className={`absolute top-0.5 left-0.5 w-5 h-5 bg-white rounded-full shadow transition-transform ${isAmoledMode ? 'translate-x-5' : ''}`} />
-                    </button>
-                  </div>
-
-                  {/* Logo background */}
-                  <div>
-                    <label className="text-sm text-gray-800 dark:text-gray-200 block mb-2">Logo Background</label>
-                    <div className="flex gap-2">
-                      {['#f1f5f9', '#ffffff', '#000000', 'transparent'].map(color => (
-                        <button
-                          key={color}
-                          onClick={() => setLogoBgColor(color)}
-                          className={`md-btn w-7 h-7 rounded border-2 transition-all ${logoBgColor === color ? 'scale-110' : 'border-gray-300 dark:border-gray-600'}`}
-                          style={{
-                            backgroundColor: color === 'transparent' ? undefined : color,
-                            borderColor: logoBgColor === color ? accentColor : undefined,
-                            backgroundImage: color === 'transparent' ? 'linear-gradient(45deg,#ccc 25%,transparent 25%,transparent 75%,#ccc 75%),linear-gradient(45deg,#ccc 25%,transparent 25%,transparent 75%,#ccc 75%)' : undefined,
-                            backgroundSize: '8px 8px',
-                            backgroundPosition: '0 0,4px 4px',
-                          }}
-                          title={color}
-                        />
-                      ))}
-                    </div>
-                  </div>
-
-                  {/* Accent color */}
-                  <div>
-                    <label className="text-sm text-gray-800 dark:text-gray-200 block mb-2">Accent Color</label>
-                    <div className="flex gap-2 flex-wrap">
-                      {ACCENT_PRESETS.map(color => (
-                        <button
-                          key={color}
-                          onClick={() => setAccentColor(color)}
-                          className="md-btn w-7 h-7 rounded-full border-2 transition-all"
-                          style={{
-                            backgroundColor: color,
-                            borderColor: accentColor === color ? 'white' : 'transparent',
-                            boxShadow: accentColor === color ? `0 0 0 2px ${color}` : undefined,
-                            transform: accentColor === color ? 'scale(1.15)' : undefined,
-                          }}
-                          title={color}
-                        />
-                      ))}
-                      {/* Custom color picker */}
-                      <label
-                        className="w-7 h-7 rounded-full border-2 border-dashed border-gray-400 dark:border-gray-500 flex items-center justify-center cursor-pointer relative overflow-hidden"
-                        title="Custom color"
-                      >
-                        <span className="text-gray-400 dark:text-gray-500 text-xs leading-none select-none">+</span>
-                        <input
-                          type="color"
-                          value={accentColor}
-                          onChange={e => setAccentColor(e.target.value)}
-                          className="absolute inset-0 opacity-0 cursor-pointer w-full h-full"
-                        />
-                      </label>
-                    </div>
-                  </div>
-
-                </div>
-              </div>
-            </>
-          )}
-        </div>
+        <button
+          onClick={() => setShowSettings(true)}
+          className="md-btn p-2 rounded-full text-gray-600 dark:text-gray-400 ml-1"
+          aria-label="Settings"
+        >
+          <Settings className="h-5 w-5" />
+        </button>
       </nav>
 
       <div className="flex flex-1 overflow-hidden">

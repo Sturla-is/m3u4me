@@ -18,6 +18,8 @@ interface AppState {
   setAmoledMode: (isAmoled: boolean) => void;
   hideUrls: boolean;
   setHideUrls: (hide: boolean) => void;
+  showSettings: boolean;
+  setShowSettings: (show: boolean) => void;
   undoEntry: { description: string; restore: () => Promise<void> } | null;
   setUndoEntry: (entry: { description: string; restore: () => Promise<void> } | null) => void;
 }
@@ -41,6 +43,8 @@ export const useStore = create<AppState>()(
       setAmoledMode: (isAmoled) => set({ isAmoledMode: isAmoled }),
       hideUrls: false,
       setHideUrls: (hide) => set({ hideUrls: hide }),
+      showSettings: false,
+      setShowSettings: (show) => set({ showSettings: show }),
       undoEntry: null,
       setUndoEntry: (entry) => set({ undoEntry: entry }),
     }),

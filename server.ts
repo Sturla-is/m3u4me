@@ -3,6 +3,7 @@ import { createServer as createViteServer } from "vite";
 import path from "path";
 import fs from "fs";
 import { v4 as uuidv4 } from "uuid";
+import crypto from "crypto";
 
 const DATA_DIR = path.join(process.cwd(), "data");
 if (!fs.existsSync(DATA_DIR)) {
@@ -61,6 +62,64 @@ function writeDb(data: Database) {
   fs.writeFileSync(DB_FILE, JSON.stringify(data, null, 2));
 }
 
+// ── Auth helpers ─────────────────────────────────────────────────────────
+const AUTH_FILE = path.join(DATA_DIR, 'auth.json');
+const PBKDF2_ITERATIONS = 100_000;
+const PBKDF2_KEYLEN = 64;
+const PBKDF2_DIGEST = 'sha512';
+
+interface AuthData {
+  passwordHash: string;  // hex
+  passwordSalt: string;  // hex
+  recoveryKeyHash: string;  // hex
+  recoveryKeySalt: string;  // hex
+}
+
+const activeSessions = new Set<string>();
+
+function readAuth(): AuthData | null {
+  try {
+    if (!fs.existsSync(AUTH_FILE)) return null;
+    return JSON.parse(fs.readFileSync(AUTH_FILE, 'utf-8'));
+  } catch { return null; }
+}
+
+function writeAuth(data: AuthData) {
+  fs.writeFileSync(AUTH_FILE, JSON.stringify(data, null, 2));
+}
+
+function deleteAuth() {
+  if (fs.existsSync(AUTH_FILE)) fs.unlinkSync(AUTH_FILE);
+  activeSessions.clear();
+}
+
+function hashPassword(password: string, salt?: string): Promise<{ hash: string; salt: string }> {
+  return new Promise((resolve, reject) => {
+    const s = salt || crypto.randomBytes(32).toString('hex');
+    crypto.pbkdf2(password, s, PBKDF2_ITERATIONS, PBKDF2_KEYLEN, PBKDF2_DIGEST, (err, key) => {
+      if (err) reject(err);
+      else resolve({ hash: key.toString('hex'), salt: s });
+    });
+  });
+}
+
+function generateToken(): string {
+  return crypto.randomBytes(64).toString('hex');
+}
+
+function generateRecoveryKey(): string {
+  // 24-char alphanumeric, grouped as XXXX-XXXX-XXXX-XXXX-XXXX-XXXX for readability
+  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; // no ambiguous 0/O/1/I
+  let key = '';
+  const bytes = crypto.randomBytes(24);
+  for (let i = 0; i < 24; i++) key += chars[bytes[i] % chars.length];
+  return key;
+}
+
+function formatRecoveryKey(key: string): string {
+  return key.match(/.{1,4}/g)!.join('-');
+}
+
 // Assign shortIds to any playlists that pre-date this feature
 function migrateShortIds() {
   const db = readDb();
@@ -102,6 +161,131 @@ async function startServer() {
   const PORT = Number(process.env.PORT) || 8080;
 
   app.use(express.json({ limit: '50mb' }));
+
+  // ── Auth middleware ──────────────────────────────────────────────────
+  const publicPaths = ['/auth/status', '/auth/login', '/auth/recover'];
+  app.use('/api', (req, res, next) => {
+    // Skip auth for public auth endpoints
+    if (publicPaths.includes(req.path)) return next();
+    // Skip auth for M3U serving endpoints handled outside /api
+    const auth = readAuth();
+    if (!auth) return next(); // No password set — allow all
+    const header = req.headers.authorization;
+    if (!header || !header.startsWith('Bearer ')) {
+      return res.status(401).json({ error: 'Authentication required' });
+    }
+    const token = header.slice(7);
+    if (!activeSessions.has(token)) {
+      return res.status(401).json({ error: 'Invalid or expired session' });
+    }
+    next();
+  });
+
+  // ── Auth routes ────────────────────────────────────────────────────
+  app.get('/api/auth/status', (_req, res) => {
+    const auth = readAuth();
+    res.json({ enabled: !!auth });
+  });
+
+  app.post('/api/auth/login', async (req, res) => {
+    const auth = readAuth();
+    if (!auth) return res.json({ token: null, message: 'No password set' });
+    const { password } = req.body;
+    if (!password) return res.status(400).json({ error: 'Password required' });
+    try {
+      const { hash } = await hashPassword(password, auth.passwordSalt);
+      if (hash !== auth.passwordHash) {
+        return res.status(401).json({ error: 'Incorrect password' });
+      }
+      const token = generateToken();
+      activeSessions.add(token);
+      res.json({ token });
+    } catch {
+      res.status(500).json({ error: 'Internal error' });
+    }
+  });
+
+  app.post('/api/auth/set-password', async (req, res) => {
+    const auth = readAuth();
+    const { password, currentPassword } = req.body;
+    if (!password || password.length < 4) {
+      return res.status(400).json({ error: 'Password must be at least 4 characters' });
+    }
+    // If a password is already set, verify the current one
+    if (auth) {
+      if (!currentPassword) return res.status(400).json({ error: 'Current password required' });
+      const { hash } = await hashPassword(currentPassword, auth.passwordSalt);
+      if (hash !== auth.passwordHash) {
+        return res.status(401).json({ error: 'Current password is incorrect' });
+      }
+    }
+    try {
+      const { hash: passwordHash, salt: passwordSalt } = await hashPassword(password);
+      const recoveryKey = generateRecoveryKey();
+      const { hash: recoveryKeyHash, salt: recoveryKeySalt } = await hashPassword(recoveryKey);
+      writeAuth({ passwordHash, passwordSalt, recoveryKeyHash, recoveryKeySalt });
+      res.json({ recoveryKey: formatRecoveryKey(recoveryKey) });
+    } catch {
+      res.status(500).json({ error: 'Internal error' });
+    }
+  });
+
+  app.post('/api/auth/recover', async (req, res) => {
+    const auth = readAuth();
+    if (!auth) return res.status(400).json({ error: 'No password set' });
+    const { recoveryKey, newPassword } = req.body;
+    if (!recoveryKey || !newPassword) {
+      return res.status(400).json({ error: 'Recovery key and new password required' });
+    }
+    if (newPassword.length < 4) {
+      return res.status(400).json({ error: 'Password must be at least 4 characters' });
+    }
+    try {
+      // Strip formatting dashes from recovery key
+      const cleanKey = recoveryKey.replace(/-/g, '').toUpperCase();
+      const { hash } = await hashPassword(cleanKey, auth.recoveryKeySalt);
+      if (hash !== auth.recoveryKeyHash) {
+        return res.status(401).json({ error: 'Invalid recovery key' });
+      }
+      const { hash: passwordHash, salt: passwordSalt } = await hashPassword(newPassword);
+      const newRecoveryKey = generateRecoveryKey();
+      const { hash: recoveryKeyHash, salt: recoveryKeySalt } = await hashPassword(newRecoveryKey);
+      writeAuth({ passwordHash, passwordSalt, recoveryKeyHash, recoveryKeySalt });
+      // Clear all existing sessions
+      activeSessions.clear();
+      // Create a new session for the user
+      const token = generateToken();
+      activeSessions.add(token);
+      res.json({ token, recoveryKey: formatRecoveryKey(newRecoveryKey) });
+    } catch {
+      res.status(500).json({ error: 'Internal error' });
+    }
+  });
+
+  app.post('/api/auth/remove-password', async (req, res) => {
+    const auth = readAuth();
+    if (!auth) return res.json({ success: true });
+    const { currentPassword } = req.body;
+    if (!currentPassword) return res.status(400).json({ error: 'Current password required' });
+    try {
+      const { hash } = await hashPassword(currentPassword, auth.passwordSalt);
+      if (hash !== auth.passwordHash) {
+        return res.status(401).json({ error: 'Incorrect password' });
+      }
+      deleteAuth();
+      res.json({ success: true });
+    } catch {
+      res.status(500).json({ error: 'Internal error' });
+    }
+  });
+
+  app.post('/api/auth/logout', (_req, res) => {
+    const header = _req.headers.authorization;
+    if (header && header.startsWith('Bearer ')) {
+      activeSessions.delete(header.slice(7));
+    }
+    res.json({ success: true });
+  });
 
   // --- API Routes ---
 
@@ -254,6 +438,29 @@ async function startServer() {
 
     writeDb(db);
     res.json({ success: true });
+  });
+
+  app.post("/api/playlists/:playlistId/channels/bulk-replace", (req, res) => {
+    const db = readDb();
+    const { playlistId } = req.params;
+    const { search, replace, field, ids } = req.body;
+    if (!search || typeof search !== "string") {
+      return res.status(400).json({ error: "Missing search string" });
+    }
+    const targetField = field || "url";
+    let modified = 0;
+    db.channels = db.channels.map(c => {
+      if (c.playlistId !== playlistId) return c;
+      if (ids && Array.isArray(ids) && !ids.includes(c.id)) return c;
+      const current = (c as any)[targetField];
+      if (typeof current !== "string" || !current.includes(search)) return c;
+      const updated = current.replaceAll(search, replace ?? "");
+      if (updated === current) return c;
+      modified++;
+      return { ...c, [targetField]: updated, updatedAt: Date.now() };
+    });
+    if (modified > 0) writeDb(db);
+    res.json({ success: true, modified });
   });
 
   app.post("/api/playlists/:playlistId/channels/bulk-delete", (req, res) => {

@@ -107,11 +107,8 @@ export default function AppInfo({ open, onClose }: AppInfoProps) {
 
         {/* Logo */}
         <div className="flex justify-center px-6 pb-4">
-          <div
-            className="px-6 py-4 rounded-lg"
-            style={{ backgroundColor: logoBgColor === 'transparent' ? undefined : logoBgColor }}
-          >
-            <Logo className="h-8 w-auto text-gray-900 dark:text-white" style={logoBgColor === '#000000' ? { color: '#ffffff' } : logoBgColor === '#ffffff' || logoBgColor === '#f1f5f9' ? { color: '#111827' } : undefined} />
+          <div className="px-6 py-4 rounded-lg">
+            <Logo className="h-8 w-auto text-gray-900 dark:text-white" />
           </div>
         </div>
 

@@ -5,6 +5,7 @@ import { parseM3U } from '../utils/m3uParser';
 import {
   Upload, Link as LinkIcon, Download, Check,
   GripVertical, CheckSquare, Square, Trash2, Eye, EyeOff, Plus, ArrowUp, ArrowDown, Activity, X,
+  Replace, Search,
 } from 'lucide-react';
 import {
   DndContext, closestCenter, KeyboardSensor, PointerSensor, useSensor, useSensors,
@@ -258,6 +259,13 @@ export default function PlaylistEditor({ playlistId }: { playlistId: string }) {
   const [healthProgress, setHealthProgress] = useState<{ done: number; total: number } | null>(null);
   const [showHealthMenu, setShowHealthMenu] = useState(false);
   const cancelHealthRef = useRef(false);
+  const [showFindReplace, setShowFindReplace] = useState(false);
+  const [frSearch, setFrSearch] = useState('');
+  const [frReplace, setFrReplace] = useState('');
+  const [frScope, setFrScope] = useState<'playlist' | 'category' | 'selected'>('category');
+  const [frField, setFrField] = useState<'url' | 'name'>('url');
+  const [frResult, setFrResult] = useState<{ modified: number } | null>(null);
+  const [frRunning, setFrRunning] = useState(false);
 
   const { activeCategory, accentColor, setUndoEntry } = useStore();
   const onAccent = contrastText(accentColor); // '#fff' or '#000' depending on luminance
@@ -265,6 +273,30 @@ export default function PlaylistEditor({ playlistId }: { playlistId: string }) {
 
   const categories = useMemo(() => playlist?.categories || [], [playlist?.categories]);
   const displayedChannels = useMemo(() => channels.filter(c => c.category === activeCategory), [channels, activeCategory]);
+
+  const [currentPage, setCurrentPage] = useState(1);
+  const [pageInputValue, setPageInputValue] = useState('1');
+  const pageSize = 100;
+  const listScrollRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [activeCategory, playlistId, frSearch]);
+
+  useEffect(() => {
+    setPageInputValue(String(currentPage));
+  }, [currentPage]);
+
+  const handlePageChange = (p: number) => {
+    setCurrentPage(p);
+    listScrollRef.current?.scrollTo({ top: 0, behavior: 'smooth' });
+  };
+
+  const totalPages = Math.max(1, Math.ceil(displayedChannels.length / pageSize));
+  const paginatedChannels = useMemo(() => {
+    const start = (currentPage - 1) * pageSize;
+    return displayedChannels.slice(start, start + pageSize);
+  }, [displayedChannels, currentPage]);
 
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
@@ -630,6 +662,17 @@ export default function PlaylistEditor({ playlistId }: { playlistId: string }) {
             </label>
 
             <button
+              onClick={() => { setShowFindReplace(true); setFrSearch(''); setFrReplace(''); setFrResult(null); if (selectedIds.size > 0) setFrScope('selected'); else setFrScope('category'); }}
+              disabled={channels.length === 0}
+              className={`${toolbarBtn} disabled:opacity-40`}
+              style={{ color: onAccent }}
+              title="Find & Replace"
+            >
+              <Replace className="h-3.5 w-3.5" />
+              <span>Replace</span>
+            </button>
+
+            <button
               onClick={publishExport}
               disabled={channels.length === 0}
               className={`${toolbarBtnOutlined} disabled:opacity-40`}
@@ -764,7 +807,7 @@ export default function PlaylistEditor({ playlistId }: { playlistId: string }) {
       )}
 
       {/* ── Channel list ─────────────────────────────────────────────────── */}
-      <div className="flex-1 overflow-y-auto">
+      <div ref={listScrollRef} className="flex-1 overflow-y-auto">
         {loading ? (
           <div className="flex items-center justify-center py-20 text-sm text-gray-400 dark:text-gray-500 animate-pulse">
             Loading channels…
@@ -824,8 +867,8 @@ export default function PlaylistEditor({ playlistId }: { playlistId: string }) {
 
             {/* Rows */}
             <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd} modifiers={[restrictToVerticalAxis]}>
-              <SortableContext items={displayedChannels.map(c => c.id)} strategy={verticalListSortingStrategy}>
-                {displayedChannels.map((channel, i) => (
+              <SortableContext items={paginatedChannels.map(c => c.id)} strategy={verticalListSortingStrategy}>
+                {paginatedChannels.map((channel, i) => (
                   <SortableChannelItem
                     key={channel.id}
                     channel={channel}
@@ -848,6 +891,54 @@ export default function PlaylistEditor({ playlistId }: { playlistId: string }) {
           </div>
         )}
       </div>
+
+      {/* Pagination controls */}
+      {totalPages > 1 && (
+        <div className="shrink-0 flex items-center justify-between px-6 py-4 border-t border-gray-200 dark:border-white/8 bg-gray-50 dark:bg-[#242424] amoled:dark:bg-[#111]">
+          <span className="text-sm text-gray-500 dark:text-gray-400">
+            Showing {(currentPage - 1) * pageSize + 1} to {Math.min(currentPage * pageSize, displayedChannels.length)} of {displayedChannels.length} channels
+          </span>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => handlePageChange(Math.max(1, currentPage - 1))}
+              disabled={currentPage === 1}
+              className="md-btn px-3 py-1.5 rounded text-sm font-medium border border-gray-300 dark:border-gray-600 disabled:opacity-50 text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-white/5"
+            >
+              Previous
+            </button>
+            <div className="flex items-center gap-1.5 mx-1">
+              <input
+                type="number"
+                min={1}
+                max={totalPages}
+                value={pageInputValue}
+                onChange={e => setPageInputValue(e.target.value)}
+                onBlur={() => {
+                  const p = parseInt(pageInputValue, 10);
+                  if (!isNaN(p) && p >= 1 && p <= totalPages) handlePageChange(p);
+                  else setPageInputValue(String(currentPage));
+                }}
+                onKeyDown={e => {
+                  if (e.key === 'Enter') {
+                    const p = parseInt(pageInputValue, 10);
+                    if (!isNaN(p) && p >= 1 && p <= totalPages) handlePageChange(p);
+                    else setPageInputValue(String(currentPage));
+                  }
+                }}
+                className="w-14 text-center border border-gray-300 dark:border-gray-600 rounded py-1 text-sm bg-white dark:bg-[#1e1e1e] text-gray-900 dark:text-white focus:outline-none focus:border-blue-500"
+              />
+              <span className="text-sm text-gray-500 dark:text-gray-400 font-medium">/ {totalPages}</span>
+            </div>
+            <button
+              onClick={() => handlePageChange(Math.min(totalPages, currentPage + 1))}
+              disabled={currentPage === totalPages}
+              className="md-btn px-3 py-1.5 rounded text-sm font-medium border border-gray-300 dark:border-gray-600 disabled:opacity-50 text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-white/5"
+            >
+              Next
+            </button>
+          </div>
+        </div>
+      )}
 
 
       {/* ── Context menu ─────────────────────────────────────────────────── */}
@@ -921,6 +1012,175 @@ export default function PlaylistEditor({ playlistId }: { playlistId: string }) {
           </div>
         </div>
       )}
+
+      {/* ── Dialog: Find & Replace ──────────────────────────────────────── */}
+      {showFindReplace && (() => {
+        // Compute scope channel IDs for preview
+        const scopeChannels: Channel[] = frScope === 'playlist'
+          ? channels
+          : frScope === 'category'
+            ? channels.filter(c => c.category === activeCategory)
+            : frScope === 'selected'
+              ? channels.filter(c => selectedIds.has(c.id))
+              : [];
+        const matchCount = frSearch
+          ? scopeChannels.filter(c => c[frField]?.includes(frSearch)).length
+          : 0;
+
+
+        const handleExecuteReplace = async () => {
+          if (!frSearch) return;
+          setFrRunning(true);
+          try {
+            let ids: string[] | undefined;
+            if (frScope === 'category') ids = channels.filter(c => c.category === activeCategory).map(c => c.id);
+            else if (frScope === 'selected') ids = Array.from(selectedIds);
+            // frScope === 'playlist' → ids = undefined (server replaces all)
+            const result = await api.bulkReplace(playlistId, frSearch, frReplace, frField, ids);
+            setFrResult({ modified: result.modified });
+            if (result.modified > 0) triggerRefresh();
+          } catch (e) { console.error(e); }
+          finally { setFrRunning(false); }
+        };
+
+        return (
+          <div className="fixed inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+            <div className="bg-white dark:bg-[#272727] amoled:dark:bg-[#1a1a1a] rounded elev-24 max-w-md w-full">
+              <h2 className="text-xl font-medium text-gray-900 dark:text-white px-6 pt-6 pb-4 flex items-center gap-2">
+                <Replace className="h-5 w-5" />
+                Find & Replace
+              </h2>
+
+              <div className="px-6 space-y-4">
+                {/* Search input */}
+                <div>
+                  <label className="block text-xs font-medium text-gray-700 dark:text-gray-300 mb-1.5">Find</label>
+                  <input
+                    autoFocus
+                    value={frSearch}
+                    onChange={e => { setFrSearch(e.target.value); setFrResult(null); }}
+                    placeholder={`Text to find in ${frField === 'url' ? 'URLs' : 'names'}…`}
+                    className="w-full border border-gray-300 dark:border-gray-600 rounded px-3 py-2.5 text-sm font-mono focus:outline-none focus:border-blue-600 dark:focus:border-blue-400 bg-transparent text-gray-900 dark:text-white placeholder-gray-400"
+                  />
+                </div>
+
+                {/* Replace input */}
+                <div>
+                  <label className="block text-xs font-medium text-gray-700 dark:text-gray-300 mb-1.5">Replace with</label>
+                  <input
+                    value={frReplace}
+                    onChange={e => { setFrReplace(e.target.value); setFrResult(null); }}
+                    placeholder="Replacement text…"
+                    className="w-full border border-gray-300 dark:border-gray-600 rounded px-3 py-2.5 text-sm font-mono focus:outline-none focus:border-blue-600 dark:focus:border-blue-400 bg-transparent text-gray-900 dark:text-white placeholder-gray-400"
+                  />
+                </div>
+
+                {/* Field selector */}
+                <div>
+                  <label className="block text-xs font-medium text-gray-700 dark:text-gray-300 mb-1.5">Target Field</label>
+                  <select
+                    value={frField}
+                    onChange={e => { setFrField(e.target.value as 'url' | 'name'); setFrResult(null); }}
+                    className="w-full border border-gray-300 dark:border-gray-600 rounded px-3 py-2.5 text-sm focus:outline-none focus:border-blue-600 dark:focus:border-blue-400 bg-transparent text-gray-900 dark:text-white"
+                  >
+                    <option value="url">Stream URL</option>
+                    <option value="name">Channel Name</option>
+                  </select>
+                </div>
+
+                {/* Scope selector */}
+                <div>
+                  <label className="block text-xs font-medium text-gray-700 dark:text-gray-300 mb-2">Scope</label>
+                  <div className="space-y-1.5">
+                    <label className="flex items-center gap-2.5 px-3 py-2 rounded hover:bg-gray-50 dark:hover:bg-white/5 cursor-pointer">
+                      <input type="radio" name="fr-scope" value="playlist" checked={frScope === 'playlist'}
+                        onChange={() => { setFrScope('playlist'); setFrResult(null); }}
+                        className="accent-blue-600" />
+                      <span className="text-sm text-gray-700 dark:text-gray-200">All channels in playlist</span>
+                      <span className="ml-auto text-xs text-gray-400 tabular-nums">{channels.length}</span>
+                    </label>
+                    <label className="flex items-center gap-2.5 px-3 py-2 rounded hover:bg-gray-50 dark:hover:bg-white/5 cursor-pointer">
+                      <input type="radio" name="fr-scope" value="category" checked={frScope === 'category'}
+                        onChange={() => { setFrScope('category'); setFrResult(null); }}
+                        className="accent-blue-600" />
+                      <span className="text-sm text-gray-700 dark:text-gray-200">All in this category</span>
+                      <span className="ml-auto text-xs text-gray-400">{activeCategory ?? '—'}</span>
+                    </label>
+                    <label className={`flex items-center gap-2.5 px-3 py-2 rounded ${selectedIds.size > 0 ? 'hover:bg-gray-50 dark:hover:bg-white/5 cursor-pointer' : 'opacity-60 cursor-default'}`}>
+                      <input type="radio" name="fr-scope" value="selected" checked={frScope === 'selected'}
+                        onChange={() => { if (selectedIds.size > 0) { setFrScope('selected'); setFrResult(null); } }}
+                        disabled={selectedIds.size === 0}
+                        className="accent-blue-600" />
+                      <span className="text-sm text-gray-700 dark:text-gray-200">Selected channels only</span>
+                      {selectedIds.size > 0 ? (
+                        <span className="ml-auto text-xs text-gray-400 tabular-nums">{selectedIds.size}</span>
+                      ) : (
+                        <span className="ml-auto text-[10px] text-gray-500 italic">Select channels first</span>
+                      )}
+                    </label>
+
+                  </div>
+                </div>
+
+                {/* Match preview */}
+                {frSearch && (
+                  <div className="flex items-center gap-2 px-3 py-2.5 rounded bg-gray-50 dark:bg-white/5">
+                    <Search className="h-3.5 w-3.5 text-gray-400 shrink-0" />
+                    <span className={`text-sm font-medium tabular-nums ${
+                      matchCount > 0
+                        ? 'text-blue-700 dark:text-blue-400'
+                        : 'text-gray-400 dark:text-gray-500'
+                    }`}>
+                      {matchCount} of {scopeChannels.length} channel{scopeChannels.length !== 1 ? 's' : ''} match
+                    </span>
+                  </div>
+                )}
+
+                {/* Result message */}
+                {frResult && (
+                  <div className={`flex items-center gap-2 px-3 py-2.5 rounded ${
+                    frResult.modified > 0
+                      ? 'bg-green-50 dark:bg-green-900/20'
+                      : 'bg-gray-50 dark:bg-white/5'
+                  }`}>
+                    <Check className={`h-3.5 w-3.5 shrink-0 ${
+                      frResult.modified > 0 ? 'text-green-600 dark:text-green-400' : 'text-gray-400'
+                    }`} />
+                    <span className={`text-sm font-medium ${
+                      frResult.modified > 0
+                        ? 'text-green-700 dark:text-green-400'
+                        : 'text-gray-500 dark:text-gray-400'
+                    }`}>
+                      {frResult.modified > 0
+                        ? `Replaced in ${frResult.modified} channel${frResult.modified !== 1 ? 's' : ''}`
+                        : 'No channels were modified'
+                      }
+                    </span>
+                  </div>
+                )}
+              </div>
+
+              {/* Actions */}
+              <div className="flex justify-end gap-1 px-4 py-4">
+                <button
+                  onClick={() => setShowFindReplace(false)}
+                  className="md-btn h-9 px-4 rounded text-xs font-medium uppercase tracking-wider text-gray-600 dark:text-gray-300"
+                >
+                  {frResult ? 'Done' : 'Cancel'}
+                </button>
+                <button
+                  onClick={handleExecuteReplace}
+                  disabled={!frSearch || matchCount === 0 || frRunning}
+                  className="md-btn h-9 px-4 rounded text-xs font-medium uppercase tracking-wider disabled:opacity-40"
+                  style={{ color: frSearch && matchCount > 0 ? accentColor : undefined }}
+                >
+                  {frRunning ? 'Replacing…' : 'Replace All'}
+                </button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
 
     </div>
   );
