@@ -86,6 +86,34 @@ pm2 startup
 pm2 save
 ```
 
+## Updating
+### 1. Navigate into the app's folder
+> [!NOTE]
+> The folder shown in the command below is only an example.
+```
+cd /opt/m3u4me
+```
+### 2. Pull the latest code from this repo
+```
+git pull
+```
+> [!NOTE]
+> During this step, you might run into the following error:
+> `Your local changes to the following files would be overwritten by merge. / package-lock.json / Please commit your changes or stash them before you merge.`
+> If so, just run `git restore package-lock.json` and then continue with the following steps.
+### 3. Install any new dependencies
+```
+npm install
+```
+### 4. Rebuild the app
+```
+npm run build
+```
+### 5. Restart the PM2 process
+```
+pm2 restart ecosystem.config.cjs
+```
+
 ## Bug reports & feature requests
 If you encounter any AI slop, or other sort of error, feel free to create a GitHub issue. I will reply ASAP.
 </br>You can also open issues for any feature requests. However, I can not guarantee that they will be accepted.
