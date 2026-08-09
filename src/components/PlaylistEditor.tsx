@@ -132,7 +132,7 @@ function SortableChannelItem({
         >
           {channel.logo
             ? <img src={channel.logo} alt="" className="w-10 h-7 object-contain rounded border border-gray-200 dark:border-white/10 hover:border-blue-400" style={{ backgroundColor: logoBgColor === 'transparent' ? undefined : logoBgColor }} />
-            : <div className="w-10 h-7 rounded border border-gray-200 dark:border-white/10 hover:border-blue-400 flex items-center justify-center text-[8px] font-bold text-gray-400 uppercase" style={{ backgroundColor: logoBgColor === 'transparent' ? undefined : logoBgColor }}>{channel.name.substring(0, 3)}</div>
+            : <div className="w-10 h-7 rounded border border-gray-200 dark:border-white/10 hover:border-blue-400 flex items-center justify-center text-[8px] font-bold text-gray-400 uppercase" style={{ backgroundColor: logoBgColor === 'transparent' ? undefined : logoBgColor }}>{(channel.name || 'Unnamed').substring(0, 3)}</div>
           }
         </div>
 
