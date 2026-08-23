@@ -21,29 +21,24 @@ m3u4me is your IPTV playlists' new home. Your streams don't leave your local net
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
 
 ## Features
-- <b>Multiple playlist support:</b> Add as many playlists as you like! You can start from scratch or from an existing playlist.
+- <b>Multiple playlist support:</b> Add as many playlists as you like. Start empty or import an M3U or XSPF playlist from a URL or an uploaded file.
+- <b>Channel pool sources:</b> Connect your Xtream Codes account, a playlist URL, or an M3U/XSPF file; then browse, search and add channels into any playlist. Each source refreshes on its own schedule and keeps a changelog of what got added, removed or renamed.
+- <b>EPG guide:</b> Add EPG sources from an XMLTV URL or an Xtream Codes account, each on its own refresh interval. Browse a live programme timeline and assign TVG IDs to your channels by hand, in bulk via automatic fuzzy name-matching, or one by one.
 - <b>Logo editing:</b> Add/edit/remove your channels' logos.
-- <b>EPG tvg-id editing:</b> Add/edit/remove your EPG IDs.
 - <b>Stream checker</b> (Not recommended): Basic stream checking functionality, not recommended due to some IPTV providers not reacting nicely to any sort of bulk checking. Use at your own risk!
-- <b>Bulk actions:</b> Move, delete or check multiple channels at once.
-- <b>Late import from M3U:</b> Forgot a source? Import new channels from a M3U file inside of an existing playlist, without overwriting your existing channels & categories.
+- <b>Bulk actions:</b> Move, delete, find & replace, or check multiple channels at once.
 - <b>Auto-saving:</b> You don't need to remember to save your changes or push your playlist. Everything happens instantly, automatically.
 - <b>Undo delete:</b> Deleted a channel by mistake? Hit the "Undo" button which appears on the bottom of your screen and bring it back without a hassle.
-- <b>Simple playlist link structure:</b> No more typing huge links on your TV. Playlists get assigned a numerical ID, which means that your download links look like this: http://IP:port/1 for your first playlist, http://IP:port/2 for the second one, and so on.
-- <b>Global search:</b> Search for any channel, stream link, or EPG ID across all of your playlists at once.
+- <b>Simple playlist link structure:</b> No more typing huge links on your TV. Playlists get assigned a numerical ID, which means that your download links look like this: http://IP:port/1 for your first playlist, http://IP:port/2 for the second one, and so on. Each playlist also gets its own EPG feed at http://IP:port/{number_ID}/epg.
+- <b>Global search:</b> Search across every playlist, channel pool source, and EPG source at once.
 - <b>Keyboard shortcuts</b>: Delete your channels with `DEL`, select everything with `Cmd+A`, make your work easier overall. Full list of commands is available inside the app.
 
 ### Cosmetic UI features:
 - <b>Light mode, Dark mode & AMOLED Dark mode</b>
-- <b>Custom accent colours</b>
+- <b>Custom accent colours:</b> Even the browser tab's favicon matches your chosen colour.
 - <b>Channel logo background colour presets</b>: Choose between light gray, white, black or transparency. <i>(Only for previewing. Does not affect the actual logos in the playlist.)</i>
 - <b>Hide stream URLs</b>: Useful for sharing screenshots.
-
-### What is not yet supported:
-- <b>Xtream Codes API:</b> You can not import channels using a Xtream Codes source.
-- <b>Managing EPG sources:</b> You need to gather your EPG IDs separately and then add them in m3u4me.
-
-I plan to implement these features in future versions.
+- <b>12-hour or 24-hour time</b>: Pick your preferred clock format for the EPG guide.
 
 ## Installation
 > [!NOTE]

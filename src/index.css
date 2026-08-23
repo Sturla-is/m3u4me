@@ -1,9 +1,22 @@
 @import "tailwindcss";
 @variant dark (&:where(.dark, .dark *));
 @variant amoled (&:where(.amoled, .amoled *));
+/* Matches devices with no hover capability (touchscreens) so hover-revealed
+   controls (e.g. row action buttons) can fall back to always-visible instead
+   of being permanently unreachable. */
+@variant no-hover (@media (hover: none));
 
 html {
   font-family: 'Roboto', system-ui, -apple-system, sans-serif;
+}
+
+/* ── MD2 motion tokens ────────────────────────────────────────────────
+   The three standard Material easing curves. Used by every transition/
+   animation below so motion feels consistent across the app. ───────── */
+:root {
+  --md-standard: cubic-bezier(0.4, 0, 0.2, 1);
+  --md-decelerate: cubic-bezier(0, 0, 0.2, 1);
+  --md-accelerate: cubic-bezier(0.4, 0, 1, 1);
 }
 
 /* ── MD2 Elevation shadows ───────────────────────────────────────────── */
@@ -43,23 +56,124 @@ html {
     0 9px 46px 8px  rgba(0,0,0,.12),
     0 11px 15px -7px rgba(0,0,0,.20);
 }
+/* These `transition` shorthands are wrapped in @layer components (Tailwind puts its own
+   utilities in @layer utilities, which is declared later and so always wins the cascade
+   regardless of source order). Without this, e.g. `.elev-1`'s unconditional
+   `transition: box-shadow ...` would silently strip a `transition-[width]` or
+   `transition-colors` utility class applied to the same element — the transition would
+   still exist, just for the wrong property. Layering it means these are only the default,
+   and any element that also carries a real Tailwind transition utility keeps that instead. */
+@layer components {
+  /* Elevation swaps (e.g. a card lifting on hover, the app bar appearing) fade smoothly
+     instead of popping between shadow values. */
+  .elev-1, .elev-2, .elev-4, .elev-8, .elev-16, .elev-24 {
+    transition: box-shadow 200ms var(--md-standard);
+  }
 
-/* ── MD2 hover/press state overlay (apply to buttons only) ───────────── */
-.md-btn {
-  position: relative;
-  overflow: hidden;
-  cursor: pointer;
-  transition: box-shadow 200ms;
+  /* ── MD2 hover/press state overlay (apply to buttons only) ─────────── */
+  .md-btn {
+    position: relative;
+    overflow: hidden;
+    cursor: pointer;
+    transition: box-shadow 200ms var(--md-standard);
+  }
+  .md-btn::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    background: currentColor;
+    opacity: 0;
+    transition: opacity 150ms var(--md-standard);
+  }
+  .md-btn:hover::after  { opacity: 0.08; }
+  .md-btn:active::after { opacity: 0.18; }
+  .md-btn:focus-visible { outline: 2px solid; outline-offset: 2px; }
 }
-.md-btn::after {
-  content: '';
+
+/* ── MD2 ripple ─────────────────────────────────────────────────────────
+   Spawned as a plain <span class="md-ripple"> by src/utils/ripple.ts on
+   pointerdown anywhere inside a .md-btn. Because every clickable surface
+   in the app already carries .md-btn, this one rule gives the whole UI
+   the classic expanding-circle click feedback with no per-component
+   wiring. .md-btn's overflow:hidden clips it to the button's own shape. */
+.md-ripple {
   position: absolute;
-  inset: 0;
-  pointer-events: none;
+  border-radius: 50%;
+  transform: scale(0);
   background: currentColor;
-  opacity: 0;
-  transition: opacity 150ms;
+  opacity: 0.22;
+  pointer-events: none;
+  animation: md-ripple-anim 500ms var(--md-decelerate) forwards;
 }
-.md-btn:hover::after  { opacity: 0.08; }
-.md-btn:active::after { opacity: 0.18; }
-.md-btn:focus-visible { outline: 2px solid; outline-offset: 2px; }
+@keyframes md-ripple-anim {
+  to { transform: scale(1); opacity: 0; }
+}
+
+/* ── MD2 entrance animations ────────────────────────────────────────────
+   Applied on mount only (there's no exit animation — components already
+   unmount instantly on close, and adding a delayed-unmount just for an
+   exit transition isn't worth the extra state here). Dialogs, menus and
+   snackbars all pop into existence today; these classes make that arrival
+   read as an intentional motion instead of a flash. */
+.md-scrim {
+  animation: md-fade-in 150ms var(--md-decelerate) both;
+}
+.md-dialog {
+  animation: md-dialog-in 200ms var(--md-decelerate) both;
+}
+.md-dialog-top {
+  animation: md-dialog-top-in 180ms var(--md-decelerate) both;
+}
+.md-list-in {
+  animation: md-slide-up 200ms var(--md-decelerate) both;
+}
+/* Small floating menus/popovers (autocomplete dropdowns, the health-check menu, the logo-URL
+   popover) — quicker and less dramatic than a full dialog since they open right next to what
+   was clicked. */
+.md-menu {
+  transform-origin: top;
+  animation: md-menu-in 130ms var(--md-decelerate) both;
+}
+@keyframes md-menu-in {
+  from { opacity: 0; transform: scaleY(0.96) translateY(-2px); }
+  to   { opacity: 1; transform: scaleY(1) translateY(0); }
+}
+.md-snackbar-in {
+  animation: md-snackbar-in 220ms var(--md-decelerate) both;
+}
+/* Full-screen view swaps (Dashboard ↔ Settings ↔ the lock screen) replace one another
+   outright rather than transitioning, so this just softens their arrival. */
+.md-page-in {
+  animation: md-fade-in 220ms var(--md-decelerate) both;
+}
+
+@keyframes md-fade-in {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+@keyframes md-dialog-in {
+  from { opacity: 0; transform: scale(0.94) translateY(6px); }
+  to   { opacity: 1; transform: scale(1) translateY(0); }
+}
+@keyframes md-dialog-top-in {
+  from { opacity: 0; transform: scale(0.97) translateY(-8px); }
+  to   { opacity: 1; transform: scale(1) translateY(0); }
+}
+@keyframes md-slide-up {
+  from { opacity: 0; transform: translateY(6px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+@keyframes md-snackbar-in {
+  from { opacity: 0; transform: translateY(12px) scale(0.98); }
+  to   { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .md-ripple, .md-scrim, .md-dialog, .md-dialog-top, .md-list-in, .md-snackbar-in, .md-page-in, .md-menu {
+    animation: none !important;
+  }
+  .elev-1, .elev-2, .elev-4, .elev-8, .elev-16, .elev-24, .md-btn, .md-btn::after {
+    transition: none !important;
+  }
+}

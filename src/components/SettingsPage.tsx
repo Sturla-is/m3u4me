@@ -1,11 +1,14 @@
 import React, { useState, useEffect } from 'react';
 import { useStore } from '../store';
 import { api, clearSessionToken } from '../apiClient';
-import { ArrowLeft, Shield, Palette, Eye, EyeOff, Copy, Check, KeyRound, Lock, Unlock, RefreshCw } from 'lucide-react';
+import { ArrowLeft, Shield, Palette, Eye, EyeOff, Copy, Check, KeyRound, Lock, Unlock, Github, ArrowUpCircle, Info, Coffee } from 'lucide-react';
+import { Logo } from './Logo';
+import { useVersionInfo } from './AppInfo';
+import { contrastText } from '../store';
 
 const ACCENT_PRESETS = [
-  '#1565C0', '#283593', '#6A1B9A', '#00695C',
-  '#2E7D32', '#C62828', '#AD1457', '#37474F',
+  '#FF2960', '#FF5D29', '#22D5A7', '#29CBFF',
+  '#5D29FF', '#607083',
 ];
 
 export default function SettingsPage() {
@@ -14,6 +17,7 @@ export default function SettingsPage() {
     isAmoledMode, setAmoledMode,
     logoBgColor, setLogoBgColor,
     accentColor, setAccentColor,
+    is24Hour, set24Hour,
     setShowSettings,
   } = useStore();
 
@@ -30,12 +34,28 @@ export default function SettingsPage() {
   const [copied, setCopied] = useState(false);
   const [securityAction, setSecurityAction] = useState<'none' | 'enable' | 'change' | 'remove'>('none');
   const [savingPassword, setSavingPassword] = useState(false);
+  const [authStatusError, setAuthStatusError] = useState(false);
+  
+  const versionInfo = useVersionInfo();
+  const GITHUB_REPO = 'https://github.com/andrei-savin/m3u4me';
+  const BMC_URL = 'https://www.buymeacoffee.com/savinandrei';
+  const BMC_YELLOW = '#FFDD00';
 
-  useEffect(() => {
+  const checkAuthStatus = () => {
+    setAuthLoading(true);
     api.getAuthStatus().then((res: any) => {
       setAuthEnabled(res.enabled);
       setAuthLoading(false);
-    }).catch(() => setAuthLoading(false));
+      setAuthStatusError(false);
+    }).catch((e) => {
+      console.error(e);
+      setAuthLoading(false);
+      setAuthStatusError(true);
+    });
+  };
+
+  useEffect(() => {
+    checkAuthStatus();
   }, []);
 
   const resetSecurityForm = () => {
@@ -102,7 +122,7 @@ export default function SettingsPage() {
   };
 
   return (
-    <div className="flex flex-col h-screen overflow-hidden bg-gray-100 dark:bg-[#121212] amoled:dark:bg-black font-sans">
+    <div className="md-page-in flex flex-col h-screen overflow-hidden bg-gray-100 dark:bg-[#121212] amoled:dark:bg-black font-sans">
       {/* Top bar */}
       <nav className="h-16 shrink-0 z-30 bg-white dark:bg-[#1e1e1e] amoled:dark:bg-[#0a0a0a] elev-4 flex items-center px-2 gap-2">
         <button
@@ -211,6 +231,19 @@ export default function SettingsPage() {
                 </div>
               </div>
 
+              {/* 24-Hour Time */}
+              <div className="flex items-center justify-between">
+                <label className="text-sm text-gray-800 dark:text-gray-200">24-Hour Time</label>
+                <button
+                  role="switch" aria-checked={is24Hour}
+                  onClick={() => set24Hour(!is24Hour)}
+                  className={`w-11 h-6 rounded-full relative transition-colors ${is24Hour ? '' : 'bg-gray-300 dark:bg-gray-600'}`}
+                  style={is24Hour ? { backgroundColor: accentColor } : undefined}
+                >
+                  <span className={`absolute top-0.5 left-0.5 w-5 h-5 bg-white rounded-full shadow transition-transform ${is24Hour ? 'translate-x-5' : ''}`} />
+                </button>
+              </div>
+
             </div>
           </section>
 
@@ -224,6 +257,16 @@ export default function SettingsPage() {
 
               {authLoading ? (
                 <p className="text-sm text-gray-400">Loading…</p>
+              ) : authStatusError ? (
+                <div>
+                  <p className="text-sm text-red-500 dark:text-red-400">Couldn't load security status. Check your connection.</p>
+                  <button
+                    onClick={checkAuthStatus}
+                    className="md-btn mt-2 text-xs font-medium underline text-gray-600 dark:text-gray-300"
+                  >
+                    Retry
+                  </button>
+                </div>
               ) : (
                 <>
                   {/* Status */}
@@ -408,6 +451,82 @@ export default function SettingsPage() {
                   )}
                 </>
               )}
+            </div>
+          </section>
+
+          {/* ── About ─────────────────────────────────────────────────────── */}
+          <section className="bg-white dark:bg-[#1e1e1e] amoled:dark:bg-[#0a0a0a] rounded-lg elev-1 overflow-hidden">
+            <div className="flex items-center gap-3 px-5 py-4 border-b border-gray-100 dark:border-white/8">
+              <Info className="h-5 w-5" style={{ color: accentColor }} />
+              <h2 className="text-base font-medium text-gray-900 dark:text-white">About</h2>
+            </div>
+            <div className="px-5 py-6 flex flex-col items-center text-center">
+              {/* Logo */}
+              <div className="mb-4">
+                <Logo className="h-10 w-auto text-gray-900 dark:text-white" />
+              </div>
+
+              {/* Description */}
+              <p className="text-sm text-gray-600 dark:text-gray-400 leading-relaxed max-w-sm">
+                Your new favourite IPTV playlist manager!
+              </p>
+              <p className="text-xs text-gray-500 dark:text-gray-500 mt-1.5 leading-relaxed max-w-sm">
+                This app is AI-generated. Nothing ever leaves your device, no data is being collected.
+              </p>
+
+              {/* GitHub & Buy Me a Coffee buttons */}
+              <div className="mt-5 mb-5 flex items-center gap-3">
+                <a
+                  href={GITHUB_REPO}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-flex items-center gap-2 h-9 px-5 rounded-full text-sm font-medium transition-colors"
+                  style={{
+                    backgroundColor: accentColor,
+                    color: contrastText(accentColor),
+                  }}
+                >
+                  <Github className="h-4 w-4" />
+                  View on GitHub
+                </a>
+                <a
+                  href={BMC_URL}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-flex items-center gap-2 h-9 px-5 rounded-full text-sm font-medium transition-colors"
+                  style={{
+                    backgroundColor: BMC_YELLOW,
+                    color: contrastText(BMC_YELLOW),
+                  }}
+                >
+                  <Coffee className="h-4 w-4" />
+                  Buy me a coffee
+                </a>
+              </div>
+
+              {/* Version & Update */}
+              <div className="flex flex-col items-center gap-2">
+                <span className="text-xs text-gray-400 dark:text-gray-500 font-mono">
+                  {versionInfo.versionCheckFailed ? 'Couldn\'t determine app version' : `v${versionInfo.current}`}
+                </span>
+                {versionInfo.updateCheckFailed && !versionInfo.versionCheckFailed && (
+                  <span className="text-xs text-gray-400 dark:text-gray-500">
+                    Couldn't check for updates
+                  </span>
+                )}
+                {versionInfo.updateAvailable && versionInfo.releaseUrl && (
+                  <a
+                    href={versionInfo.releaseUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="inline-flex items-center gap-1.5 text-xs font-medium px-3 py-1.5 rounded-full transition-colors mt-2"
+                    style={{ backgroundColor: accentColor + '18', color: accentColor }}
+                  >
+                    <ArrowUpCircle className="h-3.5 w-3.5" />
+                    Update available: v{versionInfo.latest}
+                  </a>
+                )}
+              </div>
             </div>
           </section>
 

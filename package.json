@@ -1,6 +1,6 @@
 {
   "name": "m3u4me",
-  "version": "1.1.1",
+  "version": "2.0.0",
   "description": "A local M3U IPTV playlist manager and server",
   "author": "Open Source Contributor",
   "license": "GPL-3.0",
@@ -20,13 +20,11 @@
     "@dnd-kit/utilities": "^3.2.2",
     "@tailwindcss/vite": "^4.1.14",
     "@vitejs/plugin-react": "^5.0.4",
-    "clsx": "^2.1.1",
     "express": "^4.21.2",
+    "fast-xml-parser": "^5.10.1",
     "lucide-react": "^0.546.0",
-    "motion": "^12.23.24",
     "react": "^19.0.1",
     "react-dom": "^19.0.1",
-    "tailwind-merge": "^3.5.0",
     "uuid": "^14.0.0",
     "zustand": "^5.0.13"
   },

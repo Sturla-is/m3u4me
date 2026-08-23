@@ -1,12 +1,16 @@
-import React, { useState, useMemo, useEffect, useRef } from 'react';
-import { usePlaylists, useChannels, Channel, api, triggerRefresh } from '../apiClient';
-import { useStore, contrastText } from '../store';
-import { parseM3U } from '../utils/m3uParser';
+import React, { useState, useMemo, useEffect, useLayoutEffect, useRef } from 'react';
+import { usePlaylists, useChannels, Channel, EpgChannel, api, triggerRefresh } from '../apiClient';
+import { useStore, contrastText, accentAlpha, notifyError } from '../store';
+
 import {
-  Upload, Link as LinkIcon, Download, Check,
+  Download, Check, Copy,
   GripVertical, CheckSquare, Square, Trash2, Eye, EyeOff, Plus, ArrowUp, ArrowDown, Activity, X,
-  Replace, Search,
+  Replace, Search, Wand2, ChevronLeft, ChevronRight, Layers,
 } from 'lucide-react';
+import BulkEpgAssignDialog from './BulkEpgAssignDialog';
+import ChannelLogo from './ChannelLogo';
+import { useDebouncedValue } from '../utils/useDebouncedValue';
+import { formatTime } from '../utils/formatTime';
 import {
   DndContext, closestCenter, KeyboardSensor, PointerSensor, useSensor, useSensors,
 } from '@dnd-kit/core';
@@ -16,18 +20,124 @@ import {
 import { CSS } from '@dnd-kit/utilities';
 
 /* ── Inline text-field style used for in-row editing ─────────────────────── */
-const inlineInputCls = 'border-b-2 border-blue-600 dark:border-blue-400 bg-transparent text-sm text-gray-900 dark:text-white px-0.5 py-0 focus:outline-none w-full';
+const inlineInputCls = 'border-b-2 bg-transparent text-sm text-gray-900 dark:text-white px-0.5 py-0 focus:outline-none w-full';
 
 const restrictToVerticalAxis = ({ transform }: any) => ({ ...transform, x: 0 });
+
+/* ── TVG-ID Autocomplete ──────────────────────────────────────────────── */
+function TvgIdAutocomplete({ value, onChange, onSave, onCancel }: {
+  value: string;
+  onChange: (v: string) => void;
+  onSave: () => void;
+  onCancel: () => void;
+}) {
+  const { accentColor } = useStore();
+  const [suggestions, setSuggestions] = useState<EpgChannel[]>([]);
+  const [activeIdx, setActiveIdx] = useState(-1);
+  const [showDropdown, setShowDropdown] = useState(false);
+  const dropdownRef = useRef<HTMLDivElement>(null);
+  const debouncedValue = useDebouncedValue(value, 200);
+
+  // Clears suggestions immediately when the field is emptied, rather than waiting out
+  // the debounce below.
+  useEffect(() => {
+    if (!value.trim()) { setSuggestions([]); setShowDropdown(false); }
+  }, [value]);
+
+  useEffect(() => {
+    if (!debouncedValue.trim()) return;
+    api.searchTvgIds(debouncedValue).then(data => {
+      setSuggestions(data);
+      setShowDropdown(data.length > 0);
+      setActiveIdx(-1);
+    }).catch(e => {
+      console.error(e);
+      setSuggestions([]);
+      notifyError(e, 'Failed to search EPG channels.');
+    });
+  }, [debouncedValue]);
+
+  const selectSuggestion = (id: string) => {
+    onChange(id);
+    setShowDropdown(false);
+    // Save immediately after a micro-task so the onChange settles
+    setTimeout(onSave, 0);
+  };
+
+  const handleKey = (e: React.KeyboardEvent) => {
+    if (e.key === 'Escape') { onCancel(); return; }
+    if (e.key === 'Enter') {
+      if (activeIdx >= 0 && suggestions[activeIdx]) {
+        e.preventDefault();
+        selectSuggestion(suggestions[activeIdx].id);
+      } else {
+        onSave();
+      }
+      return;
+    }
+    if (e.key === 'ArrowDown' && showDropdown) {
+      e.preventDefault();
+      setActiveIdx(i => Math.min(i + 1, suggestions.length - 1));
+    } else if (e.key === 'ArrowUp' && showDropdown) {
+      e.preventDefault();
+      setActiveIdx(i => Math.max(i - 1, 0));
+    }
+  };
+
+  useEffect(() => {
+    if (activeIdx >= 0) {
+      dropdownRef.current?.querySelector(`[data-idx="${activeIdx}"]`)?.scrollIntoView({ block: 'nearest' });
+    }
+  }, [activeIdx]);
+
+  return (
+    <div className="w-full relative" onClick={e => e.stopPropagation()}>
+      <input
+        autoFocus
+        value={value}
+        onChange={e => onChange(e.target.value)}
+        onBlur={() => { setTimeout(() => setShowDropdown(false), 150); onSave(); }}
+        onKeyDown={handleKey}
+        className={`${inlineInputCls} font-mono text-[11px]`}
+        style={{ borderColor: accentColor }}
+        placeholder="Type to search EPG pool…"
+      />
+      {showDropdown && (
+        <div
+          ref={dropdownRef}
+          className="md-menu absolute z-50 top-full left-0 right-0 mt-1 bg-white dark:bg-[#2a2a2a] amoled:dark:bg-[#1a1a1a] rounded elev-8 max-h-48 overflow-y-auto border border-gray-200 dark:border-white/10"
+        >
+          {suggestions.map((s, i) => (
+            <button
+              key={`${s.sourceId}-${s.id}`}
+              data-idx={i}
+              onMouseDown={e => { e.preventDefault(); selectSuggestion(s.id); }}
+              className={`w-full flex items-center gap-2 px-3 py-2 text-left text-[11px] transition-colors ${
+                i === activeIdx ? 'dark:bg-white/10' : 'hover:bg-gray-50 dark:hover:bg-white/5'
+              }`}
+              style={i === activeIdx ? { backgroundColor: `${accentColor}15` } : undefined}
+            >
+              {s.icon && <img src={s.icon} className="w-4 h-4 rounded shrink-0" alt="" onError={e => (e.currentTarget.style.display = 'none')} />}
+              <span className="truncate text-gray-700 dark:text-gray-200">{s.displayName}</span>
+              <span className="ml-auto shrink-0 font-mono text-gray-400 dark:text-gray-500 text-[10px]">{s.id}</span>
+              <span className="shrink-0 text-gray-300 dark:text-gray-600 text-[9px]">{s.sourceName}</span>
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
 
 /* ── Sortable channel row ─────────────────────────────────────────────────── */
 type HealthStatus = 'checking' | 'ok' | 'error' | 'timeout' | 'skipped';
 type HealthEntry = { status: HealthStatus; checkedAt: number };
 
-function formatCheckedAt(ts: number): string {
+function formatCheckedAt(ts: number, is24Hour: boolean): string {
   const d = new Date(ts);
   const p = (n: number) => String(n).padStart(2, '0');
-  return `${p(d.getDate())}.${p(d.getMonth() + 1)}.${d.getFullYear()}, ${p(d.getHours())}:${p(d.getMinutes())}`;
+  const dateStr = `${p(d.getDate())}.${p(d.getMonth() + 1)}.${d.getFullYear()}`;
+  return `${dateStr}, ${formatTime(d, is24Hour)}`;
 }
 
 function HealthDot({ status }: { status: HealthStatus }) {
@@ -42,7 +152,7 @@ function HealthDot({ status }: { status: HealthStatus }) {
 function SortableChannelItem({
   channel, isSelected, toggleSelection,
   onUpdate, onDelete, onToggleHide,
-  activeEditId, setActiveEditId, colWidths, isHighlighted, rowIndex, onRightClick, healthSt,
+  activeEditId, setActiveEditId, colWidths, isHighlighted, rowIndex, onRightClick, healthSt, tvgIdLabel,
 }: {
   key?: string | number;
   channel: Channel;
@@ -58,8 +168,9 @@ function SortableChannelItem({
   rowIndex: number;
   onRightClick: (e: React.MouseEvent) => void;
   healthSt?: HealthEntry;
+  tvgIdLabel?: { displayName: string; sourceName: string };
 }) {
-  const { logoBgColor, hideUrls } = useStore();
+  const { logoBgColor, hideUrls, accentColor, is24Hour } = useStore();
   const { attributes, listeners, setNodeRef, transform, transition } = useSortable({ id: channel.id });
   const style = { transform: CSS.Transform.toString(transform), transition };
 
@@ -96,13 +207,19 @@ function SortableChannelItem({
     : isHighlighted
       ? 'bg-amber-50 dark:bg-amber-900/20 amoled:dark:bg-amber-900/25'
       : isSelected
-        ? 'bg-blue-50/60 dark:bg-blue-900/10 amoled:dark:bg-blue-900/20'
+        ? ''  // accent tint applied via inline style below
         : isEven
           ? 'bg-white dark:bg-[#1e1e1e] amoled:dark:bg-black hover:bg-gray-50 dark:hover:bg-white/3 amoled:dark:hover:bg-white/4'
           : 'bg-gray-50/70 dark:bg-[#222222] amoled:dark:bg-[#0d0d0d] hover:bg-gray-100/70 dark:hover:bg-white/5 amoled:dark:hover:bg-white/5';
 
   return (
-    <div id={`ch-${channel.id}`} ref={setNodeRef} style={style} className={`${rowBase} ${rowBg}`} onContextMenu={onRightClick}>
+    <div
+      id={`ch-${channel.id}`}
+      ref={setNodeRef}
+      style={{ ...style, ...(isSelected ? { backgroundColor: `${accentColor}18` } : {}) }}
+      className={`${rowBase} ${rowBg}`}
+      onContextMenu={onRightClick}
+    >
 
       {/* Drag handle */}
       <div
@@ -116,10 +233,11 @@ function SortableChannelItem({
       <div className="w-8 shrink-0 flex items-center justify-center">
         <button
           onClick={e => toggleSelection(channel.id, e.shiftKey)}
-          className="md-btn p-1 rounded-full text-gray-400 dark:text-gray-600 hover:text-blue-600 dark:hover:text-blue-400"
+          className="md-btn p-1 rounded-full text-gray-400 dark:text-gray-600 hover:text-gray-700 dark:hover:text-gray-200"
+          style={isSelected ? { color: accentColor } : undefined}
         >
           {isSelected
-            ? <CheckSquare className="h-4 w-4 text-blue-600 dark:text-blue-400" />
+            ? <CheckSquare className="h-4 w-4" />
             : <Square className="h-4 w-4" />}
         </button>
       </div>
@@ -130,16 +248,18 @@ function SortableChannelItem({
           className="cursor-pointer"
           onClick={e => { e.stopPropagation(); startEdit('logo', channel.logo || ''); }}
         >
-          {channel.logo
-            ? <img src={channel.logo} alt="" className="w-10 h-7 object-contain rounded border border-gray-200 dark:border-white/10 hover:border-blue-400" style={{ backgroundColor: logoBgColor === 'transparent' ? undefined : logoBgColor }} />
-            : <div className="w-10 h-7 rounded border border-gray-200 dark:border-white/10 hover:border-blue-400 flex items-center justify-center text-[8px] font-bold text-gray-400 uppercase" style={{ backgroundColor: logoBgColor === 'transparent' ? undefined : logoBgColor }}>{(channel.name || 'Unnamed').substring(0, 3)}</div>
-          }
+          <ChannelLogo
+            logo={channel.logo}
+            name={channel.name}
+            logoBgColor={logoBgColor}
+            className="w-10 h-7 rounded border border-gray-200 dark:border-white/10 hover:border-gray-400"
+          />
         </div>
 
         {/* Logo URL popover */}
         {editingField === 'logo' && (
           <div
-            className="absolute top-9 left-0 z-30 w-64 bg-white dark:bg-[#272727] rounded elev-8 p-4"
+            className="md-menu absolute top-9 left-0 z-30 w-64 bg-white dark:bg-[#272727] rounded elev-8 p-4"
             onClick={e => e.stopPropagation()}
           >
             <label className="block text-xs font-medium text-gray-700 dark:text-gray-300 mb-1.5">Logo URL</label>
@@ -149,7 +269,9 @@ function SortableChannelItem({
               onChange={e => setEditValue(e.target.value)}
               onKeyDown={handleKey}
               placeholder="https://…"
-              className="w-full border border-gray-300 dark:border-gray-600 rounded px-2.5 py-1.5 text-xs font-mono focus:outline-none focus:border-blue-600 bg-transparent text-gray-900 dark:text-white placeholder-gray-400 mb-3"
+              className="w-full border border-gray-300 dark:border-gray-600 rounded px-2.5 py-1.5 text-xs font-mono focus:outline-none bg-transparent text-gray-900 dark:text-white placeholder-gray-400 mb-3"
+              onFocus={e => (e.target.style.borderColor = accentColor)}
+              onBlur={e => (e.target.style.borderColor = '')}
             />
             {editValue ? (
               <div className="w-10 h-7 mb-3 overflow-hidden rounded border border-gray-200 dark:border-white/10 flex items-center justify-center" style={{ backgroundColor: logoBgColor === 'transparent' ? undefined : logoBgColor }}>
@@ -158,7 +280,7 @@ function SortableChannelItem({
             ) : null}
             <div className="flex justify-end gap-1">
               <button onClick={() => setEditingField(null)} className="md-btn h-8 px-3 rounded text-[11px] font-medium uppercase tracking-wider text-gray-600 dark:text-gray-400">Cancel</button>
-              <button onClick={saveEdit} className="md-btn h-8 px-3 rounded text-[11px] font-medium uppercase tracking-wider text-blue-700 dark:text-blue-400">Save</button>
+              <button onClick={saveEdit} className="md-btn h-8 px-3 rounded text-[11px] font-medium uppercase tracking-wider" style={{ color: accentColor }}>Save</button>
             </div>
           </div>
         )}
@@ -167,26 +289,51 @@ function SortableChannelItem({
       {/* Name + URL */}
       <div className="shrink-0 pr-4 flex flex-col justify-center gap-0.5 overflow-hidden" style={{ width: colWidths.name }}>
         {editingField === 'name'
-          ? <input autoFocus value={editValue} onChange={e => setEditValue(e.target.value)} onBlur={saveEdit} onKeyDown={handleKey} className={inlineInputCls} onClick={e => e.stopPropagation()} />
-          : <p onClick={() => startEdit('name', channel.name)} className={`text-sm font-medium truncate cursor-text hover:underline decoration-dashed underline-offset-2 ${isSelected ? 'text-blue-700 dark:text-blue-400' : 'text-gray-900 dark:text-white'}`} title="Click to edit">{channel.name || 'Unnamed'}</p>
+          ? <input autoFocus value={editValue} onChange={e => setEditValue(e.target.value)} onBlur={saveEdit} onKeyDown={handleKey} className={inlineInputCls} style={{ borderColor: accentColor }} onClick={e => e.stopPropagation()} placeholder="Channel name" />
+          : <p onClick={() => startEdit('name', channel.name)} className={`text-sm font-medium truncate cursor-text hover:underline decoration-dashed underline-offset-2 ${isSelected ? '' : 'text-gray-900 dark:text-white'}`} style={isSelected ? { color: accentColor } : undefined} title="Click to edit">{channel.name || 'Unnamed'}</p>
         }
         {!hideUrls && (editingField === 'url'
-          ? <input autoFocus value={editValue} onChange={e => setEditValue(e.target.value)} onBlur={saveEdit} onKeyDown={handleKey} className={`${inlineInputCls} font-mono text-[11px]`} onClick={e => e.stopPropagation()} />
+          ? <input autoFocus value={editValue} onChange={e => setEditValue(e.target.value)} onBlur={saveEdit} onKeyDown={handleKey} className={`${inlineInputCls} font-mono text-[11px]`} style={{ borderColor: accentColor }} onClick={e => e.stopPropagation()} placeholder="https://…" />
           : <p onClick={() => startEdit('url', channel.url || '')} className="text-[11px] font-mono text-gray-400 dark:text-gray-500 truncate cursor-text hover:underline decoration-dashed underline-offset-2" title="Click to edit">{channel.url || '— no url —'}</p>
         )}
       </div>
 
       {/* TVG ID — fills remaining space */}
-      <div className="flex-1 pr-4 hidden md:flex items-center overflow-hidden">
+      <div className="flex-1 pr-4 hidden md:flex items-center overflow-hidden relative">
         {editingField === 'tvgId'
-          ? <input autoFocus value={editValue} onChange={e => setEditValue(e.target.value)} onBlur={saveEdit} onKeyDown={handleKey} className={`${inlineInputCls} font-mono text-[11px]`} onClick={e => e.stopPropagation()} />
-          : <span onClick={() => startEdit('tvgId', channel.tvgId || '')} className={`font-mono text-[11px] truncate cursor-text hover:underline decoration-dashed underline-offset-2 ${channel.tvgId ? 'text-gray-500 dark:text-gray-400' : 'text-gray-300 dark:text-gray-600 italic'}`}>{channel.tvgId || '—'}</span>
+          ? <TvgIdAutocomplete
+              value={editValue}
+              onChange={setEditValue}
+              onSave={saveEdit}
+              onCancel={() => { setEditingField(null); if (activeEditId === channel.id) setActiveEditId(null); }}
+            />
+          : channel.tvgId && tvgIdLabel
+            ? <span
+                onClick={() => startEdit('tvgId', channel.tvgId || '')}
+                className="inline-flex items-center gap-1 max-w-full min-w-0 cursor-pointer group/tag opacity-90 hover:opacity-100 transition-opacity"
+                title={`${channel.tvgId}\nClick to edit`}
+              >
+                {/* `truncate` on a flex container doesn't actually ellipsize its
+                    children — browsers just hard-clip at the box edge — so only
+                    the displayName span (a plain text run) carries it. The pill
+                    and this wrapper stay `min-w-0 overflow-hidden` so displayName
+                    is the part that gives way, keeping the short source tag intact. */}
+                <span
+                  className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-medium min-w-0 overflow-hidden"
+                  style={{ backgroundColor: `${accentColor}20`, color: accentColor }}
+                >
+                  <span className="truncate min-w-0">{tvgIdLabel.displayName}</span>
+                  <span className="shrink-0 opacity-50">•</span>
+                  <span className="shrink-0 opacity-80">{tvgIdLabel.sourceName}</span>
+                </span>
+              </span>
+            : <span onClick={() => startEdit('tvgId', channel.tvgId || '')} className={`font-mono text-[11px] truncate cursor-text hover:underline decoration-dashed underline-offset-2 ${channel.tvgId ? 'text-gray-500 dark:text-gray-400' : 'text-gray-300 dark:text-gray-600 italic'}`}>{channel.tvgId || '—'}</span>
         }
       </div>
 
       {/* Health status */}
       {healthSt && (
-        <div className="hidden md:flex items-center gap-1.5 shrink-0 pr-4">
+        <div className="hidden md:flex items-center gap-1.5 shrink-0 pr-4" title={healthSt.status !== 'checking' ? `Checked ${formatCheckedAt(healthSt.checkedAt, is24Hour)}` : undefined}>
           <HealthDot status={healthSt.status} />
           {healthSt.status !== 'checking' && (
             <>
@@ -198,8 +345,11 @@ function SortableChannelItem({
               }`}>
                 {healthSt.status === 'ok' ? 'Online' : healthSt.status === 'error' ? 'Offline' : healthSt.status === 'timeout' ? 'Timeout' : 'Skipped'}
               </span>
+              {/* Time-only — the full date rarely adds anything here (a whole category is
+                  usually checked in one batch) and it was crowding out the TVG/EPG badge
+                  next to it. Full date+time still shows via the row's title tooltip above. */}
               <span className="text-[10px] font-mono text-gray-400 dark:text-gray-500">
-                {formatCheckedAt(healthSt.checkedAt)}
+                {formatTime(healthSt.checkedAt, is24Hour)}
               </span>
             </>
           )}
@@ -210,7 +360,7 @@ function SortableChannelItem({
       <div className="w-16 shrink-0 flex items-center justify-end gap-0.5 pr-2">
         <button
           onClick={() => onToggleHide(channel.id, !!channel.isHidden)}
-          className="md-btn p-1.5 rounded-full text-gray-400 hover:text-blue-600 dark:hover:text-blue-400"
+          className="md-btn p-1.5 rounded-full text-gray-400 hover:text-gray-700 dark:hover:text-gray-300"
           title={channel.isHidden ? 'Include in export' : 'Exclude from export'}
         >
           {channel.isHidden ? <EyeOff className="h-3.5 w-3.5 text-amber-500" /> : <Eye className="h-3.5 w-3.5" />}
@@ -231,12 +381,11 @@ function SortableChannelItem({
 export default function PlaylistEditor({ playlistId }: { playlistId: string }) {
   const { playlists } = usePlaylists();
   const playlist = playlists.find(p => p.id === playlistId);
-  const { channels, loading } = useChannels(playlistId);
+  const { channels, loading, error: channelsError, refetch: refetchChannels } = useChannels(playlistId);
 
-  const [importing, setImporting] = useState(false);
+  const [showExportDialog, setShowExportDialog] = useState(false);
   const [copied, setCopied] = useState(false);
-  const [showImportLink, setShowImportLink] = useState(false);
-  const [importUrl, setImportUrl] = useState('');
+  const [copiedEpg, setCopiedEpg] = useState(false);
 
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [lastSelectedId, setLastSelectedId] = useState<string | null>(null);
@@ -254,6 +403,7 @@ export default function PlaylistEditor({ playlistId }: { playlistId: string }) {
   const [highlightedId, setHighlightedId] = useState<string | null>(null);
   const pendingScrollId = useRef<string | null>(null);
   const [contextMenu, setContextMenu] = useState<{ channelId: string; x: number; y: number } | null>(null);
+  const contextMenuRef = useRef<HTMLDivElement>(null);
   const pendingInsert = useRef<{ newId: string; insertAfterIndex: number } | null>(null);
   const [healthStatus, setHealthStatus] = useState<Map<string, HealthEntry>>(new Map());
   const [healthProgress, setHealthProgress] = useState<{ done: number; total: number } | null>(null);
@@ -266,13 +416,41 @@ export default function PlaylistEditor({ playlistId }: { playlistId: string }) {
   const [frField, setFrField] = useState<'url' | 'name'>('url');
   const [frResult, setFrResult] = useState<{ modified: number } | null>(null);
   const [frRunning, setFrRunning] = useState(false);
+  const [showBulkEpg, setShowBulkEpg] = useState(false);
 
-  const { activeCategory, accentColor, setUndoEntry } = useStore();
+  // Resolved tvg-id labels: maps tvgId -> { displayName, sourceName }
+  const [tvgIdLabels, setTvgIdLabels] = useState<Record<string, { displayName: string; sourceName: string }>>({});
+
+  useEffect(() => {
+    const tvgIds = channels.map(c => c.tvgId).filter(Boolean) as string[];
+    if (tvgIds.length === 0) {
+      // Avoid a setState (and the render it schedules) when there's nothing to clear —
+      // `channels` can otherwise change reference on every render while a fetch is in
+      // flight (see useChannels in apiClient.ts), which would re-fire this effect and
+      // set a brand-new (but equally empty) object every time, forever, until the fetch
+      // resolves.
+      setTvgIdLabels(prev => (Object.keys(prev).length === 0 ? prev : {}));
+      return;
+    }
+    // Deduplicate
+    const unique = [...new Set(tvgIds)];
+    api.resolveTvgIds(unique).then(setTvgIdLabels).catch(e => { console.error(e); notifyError(e, 'Failed to resolve EPG channel names.'); });
+  }, [channels]);
+
+  const { activeCategory, accentColor, setUndoEntry, scrollTarget, setScrollTarget } = useStore();
+  const scrollToChannelId = scrollTarget?.kind === 'playlist' ? scrollTarget.id : null;
   const onAccent = contrastText(accentColor); // '#fff' or '#000' depending on luminance
   const onAccentMuted = onAccent === '#ffffff' ? 'rgba(255,255,255,0.75)' : 'rgba(0,0,0,0.60)';
 
   const categories = useMemo(() => playlist?.categories || [], [playlist?.categories]);
-  const displayedChannels = useMemo(() => channels.filter(c => c.category === activeCategory), [channels, activeCategory]);
+
+  // Optimistic local order: updated immediately on drag so the drop animation
+  // sees the item in its new slot instead of snapping back to the original.
+  const [localOrder, setLocalOrder] = useState<Channel[] | null>(null);
+  const baseChannels = useMemo(() => channels.filter(c => c.category === activeCategory), [channels, activeCategory]);
+  // Whenever the server-fetched channels change, discard any stale optimistic order.
+  useEffect(() => { setLocalOrder(null); }, [channels]);
+  const displayedChannels = localOrder ?? baseChannels;
 
   const [currentPage, setCurrentPage] = useState(1);
   const [pageInputValue, setPageInputValue] = useState('1');
@@ -297,6 +475,31 @@ export default function PlaylistEditor({ playlistId }: { playlistId: string }) {
     const start = (currentPage - 1) * pageSize;
     return displayedChannels.slice(start, start + pageSize);
   }, [displayedChannels, currentPage]);
+
+  // Jump to a specific channel requested externally (e.g. Spotlight search). The channel
+  // may be on any page, so first flip to the page it actually lives on...
+  useEffect(() => {
+    if (!scrollToChannelId) return;
+    const idx = baseChannels.findIndex(c => c.id === scrollToChannelId);
+    if (idx === -1) return;
+    const targetPage = Math.floor(idx / pageSize) + 1;
+    if (targetPage !== currentPage) setCurrentPage(targetPage);
+  }, [scrollToChannelId, baseChannels, currentPage]);
+
+  // ...then, once that page has actually rendered the row, scroll to it and highlight it.
+  // Instant rather than smooth: a `behavior: 'smooth'` scroll isn't guaranteed to actually
+  // animate (observed stalling outright in some environments), which would leave the row
+  // scrolled nowhere near view.
+  useEffect(() => {
+    if (!scrollToChannelId) return;
+    const el = document.getElementById(`ch-${scrollToChannelId}`);
+    if (!el) return;
+    setScrollTarget(null);
+    el.scrollIntoView({ behavior: 'instant', block: 'center' });
+    setHighlightedId(scrollToChannelId);
+    const t = setTimeout(() => setHighlightedId(null), 2000);
+    return () => clearTimeout(t);
+  }, [scrollToChannelId, paginatedChannels, setScrollTarget]);
 
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
@@ -338,6 +541,17 @@ export default function PlaylistEditor({ playlistId }: { playlistId: string }) {
     };
   }, [contextMenu]);
 
+  useLayoutEffect(() => {
+    if (!contextMenu || !contextMenuRef.current) return;
+    const el = contextMenuRef.current;
+    const margin = 8;
+    const rect = el.getBoundingClientRect();
+    const top = Math.max(margin, Math.min(contextMenu.y, window.innerHeight - rect.height - margin));
+    const left = Math.max(margin, Math.min(contextMenu.x, window.innerWidth - rect.width - margin));
+    el.style.top = `${top}px`;
+    el.style.left = `${left}px`;
+  }, [contextMenu]);
+
   useEffect(() => {
     const pending = pendingInsert.current;
     if (!pending) return;
@@ -357,7 +571,7 @@ export default function PlaylistEditor({ playlistId }: { playlistId: string }) {
     if (Object.keys(orders).length > 0) {
       api.reorderChannels(playlistId, orders)
         .then(() => { pendingScrollId.current = pending.newId; triggerRefresh(); })
-        .catch(console.error);
+        .catch(e => { console.error(e); notifyError(e, 'Failed to reorder channels.'); });
     } else {
       pendingScrollId.current = pending.newId;
     }
@@ -378,50 +592,28 @@ export default function PlaylistEditor({ playlistId }: { playlistId: string }) {
   if (!playlist) return null;
 
   const exportUrl = `${window.location.protocol}//${window.location.host}/${playlist.shortId}`;
+  const epgUrl = `${window.location.protocol}//${window.location.host}/${playlist.shortId}/epg`;
 
   /* ── Handlers ──────────────────────────────────────────────────────────── */
 
-  const importFromUrl = async () => {
-    if (!importUrl) return;
-    setImporting(true); setShowImportLink(false);
-    try {
-      const res = await fetch(`/api/proxy?url=${encodeURIComponent(importUrl)}`);
-      if (!res.ok) throw new Error('Failed to fetch');
-      const parsed = parseM3U(await res.text());
-      if (parsed.length > 0) { await api.bulkAddChannels(playlistId, parsed); triggerRefresh(); }
-    } catch { alert('Failed to import. Check that the URL is accessible and returns valid M3U.'); }
-    finally { setImporting(false); setImportUrl(''); }
-  };
-
-  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    setImporting(true);
-    try {
-      const parsed = parseM3U(await file.text());
-      if (parsed.length > 0) { await api.bulkAddChannels(playlistId, parsed); triggerRefresh(); }
-    } catch (err) { console.error(err); }
-    finally { setImporting(false); if (e.target) e.target.value = ''; }
-  };
-
-  const copyToClipboard = () => {
-    const write = () => { setCopied(true); setTimeout(() => setCopied(false), 2000); };
+  const copyText = (text: string, setFlag: (v: boolean) => void) => {
+    const write = () => { setFlag(true); setTimeout(() => setFlag(false), 2000); };
     if (navigator.clipboard && window.isSecureContext) {
-      navigator.clipboard.writeText(exportUrl).then(write).catch(fallback);
-    } else {
-      fallback();
-    }
+      navigator.clipboard.writeText(text).then(write).catch(fallback);
+    } else { fallback(); }
     function fallback() {
-      // Works over plain HTTP on a local network where clipboard API is unavailable
       const el = document.createElement('textarea');
-      el.value = exportUrl;
+      el.value = text;
       el.style.cssText = 'position:fixed;opacity:0;top:0;left:0;';
       document.body.appendChild(el);
       el.select();
-      try { document.execCommand('copy'); write(); } catch {}
+      try { document.execCommand('copy'); write(); } catch (e) { console.error(e); notifyError(e, 'Failed to copy to clipboard.'); }
       document.body.removeChild(el);
     }
   };
+
+  const copyToClipboard = () => copyText(exportUrl, setCopied);
+  const copyEpgToClipboard = () => copyText(epgUrl, setCopiedEpg);
 
   const toggleSelection = (id: string, shiftKey: boolean) => {
     const next = new Set(selectedIds);
@@ -444,12 +636,12 @@ export default function PlaylistEditor({ playlistId }: { playlistId: string }) {
 
   const handleChannelUpdate = async (id: string, field: string, value: string) => {
     try { await api.updateChannel(playlistId, id, { [field]: value.trim() || null }); triggerRefresh(); }
-    catch (e) { console.error(e); }
+    catch (e) { console.error(e); notifyError(e, 'Failed to save channel.'); }
   };
 
   const handleToggleHide = async (id: string, current: boolean) => {
     try { await api.updateChannel(playlistId, id, { isHidden: !current }); triggerRefresh(); }
-    catch (e) { console.error(e); }
+    catch (e) { console.error(e); notifyError(e, 'Failed to update channel.'); }
   };
 
   const handleSingleDelete = async (id: string) => {
@@ -463,7 +655,7 @@ export default function PlaylistEditor({ playlistId }: { playlistId: string }) {
         description: `Deleted "${channel.name}"`,
         restore: async () => { await api.bulkAddChannels(playlistId, [rest]); triggerRefresh(); },
       });
-    } catch (e) { console.error(e); }
+    } catch (e) { console.error(e); notifyError(e, 'Failed to delete channel.'); }
   };
 
   const executeBulkMove = async (targetCategory: string) => {
@@ -472,7 +664,7 @@ export default function PlaylistEditor({ playlistId }: { playlistId: string }) {
       await api.bulkUpdateChannels(playlistId, Array.from(selectedIds), { category: targetCategory });
       triggerRefresh();
       setBulkCategory(''); setSelectedIds(new Set()); setLastSelectedId(null);
-    } catch (e) { console.error(e); }
+    } catch (e) { console.error(e); notifyError(e, 'Failed to move channels.'); }
   };
 
   const handleBulkMove = async (val: string) => {
@@ -490,7 +682,7 @@ export default function PlaylistEditor({ playlistId }: { playlistId: string }) {
         description: `Deleted ${toDelete.length} channel${toDelete.length !== 1 ? 's' : ''}`,
         restore: async () => { await api.bulkAddChannels(playlistId, restoreData); triggerRefresh(); },
       });
-    } catch (e) { console.error(e); }
+    } catch (e) { console.error(e); notifyError(e, 'Failed to delete channels.'); }
     finally { setShowBulkDeleteConfirm(false); }
   };
 
@@ -500,11 +692,15 @@ export default function PlaylistEditor({ playlistId }: { playlistId: string }) {
       const oldIndex = displayedChannels.findIndex(c => c.id === active.id);
       const newIndex = displayedChannels.findIndex(c => c.id === over.id);
       const reordered = arrayMove(displayedChannels, oldIndex, newIndex) as Channel[];
+      // Optimistically update local order immediately so dnd-kit's drop animation
+      // sees the item already at the new position and does not snap it back.
+      setLocalOrder(reordered);
       const start = Math.min(oldIndex, newIndex);
       const end = Math.max(oldIndex, newIndex);
       const orders: Record<string, number> = {};
       for (let i = start; i <= end; i++) orders[reordered[i].id] = displayedChannels[i].order;
-      try { await api.reorderChannels(playlistId, orders); triggerRefresh(); } catch {}
+      try { await api.reorderChannels(playlistId, orders); triggerRefresh(); }
+      catch (e) { console.error(e); notifyError(e, 'Failed to reorder channels.'); setLocalOrder(null); }
     }
   };
 
@@ -543,7 +739,7 @@ export default function PlaylistEditor({ playlistId }: { playlistId: string }) {
         };
       }
       triggerRefresh();
-    } catch (e) { console.error(e); }
+    } catch (e) { console.error(e); notifyError(e, 'Failed to insert channel.'); }
   };
 
   const handleAddChannel = async () => {
@@ -556,7 +752,7 @@ export default function PlaylistEditor({ playlistId }: { playlistId: string }) {
       const data = await resp.json();
       if (data.ids?.[0]) pendingScrollId.current = data.ids[0];
       triggerRefresh();
-    } catch (e) { console.error(e); }
+    } catch (e) { console.error(e); notifyError(e, 'Failed to add channel.'); }
   };
 
   const runHealthCheck = async (toCheck: Channel[]) => {
@@ -570,6 +766,7 @@ export default function PlaylistEditor({ playlistId }: { playlistId: string }) {
       return next;
     });
     setHealthProgress({ done: 0, total: toCheck.length });
+    let batchFailures = 0;
     for (let i = 0; i < toCheck.length; i += BATCH) {
       if (cancelHealthRef.current) break;
       const batch = toCheck.slice(i, i + BATCH);
@@ -584,10 +781,22 @@ export default function PlaylistEditor({ playlistId }: { playlistId: string }) {
           });
           return next;
         });
-      } catch { /* leave batch as 'checking' on network failure */ }
+      } catch (e) {
+        console.error(e);
+        batchFailures++;
+        // Mark this batch's channels as errored instead of leaving them stuck on "checking".
+        setHealthStatus(prev => {
+          const next = new Map(prev);
+          batch.forEach(c => next.set(c.id, { status: 'error', checkedAt: Date.now() }));
+          return next;
+        });
+      }
       setHealthProgress({ done: Math.min(i + BATCH, toCheck.length), total: toCheck.length });
     }
     setHealthProgress(null);
+    if (batchFailures > 0) {
+      notifyError(null, `Health check failed for ${batchFailures} batch${batchFailures !== 1 ? 'es' : ''} of channels due to a network error.`);
+    }
   };
 
   const cancelHealthCheck = () => {
@@ -598,11 +807,6 @@ export default function PlaylistEditor({ playlistId }: { playlistId: string }) {
       next.forEach((entry, id) => { if (entry.status === 'checking') next.delete(id); });
       return next;
     });
-  };
-
-  const publishExport = () => {
-    // exportUrl already points to the short numeric route which serves the M3U directly
-    window.location.href = exportUrl;
   };
 
   /* ── Render ────────────────────────────────────────────────────────────── */
@@ -633,33 +837,6 @@ export default function PlaylistEditor({ playlistId }: { playlistId: string }) {
           </div>
 
           <div className="flex items-center gap-1 relative">
-            <button
-              onClick={copyToClipboard}
-              className={toolbarBtnOutlined}
-              style={{ color: onAccent, borderColor: `${onAccent}55` }}
-              title="Copy export URL"
-            >
-              {copied ? <Check className="h-3.5 w-3.5" /> : <LinkIcon className="h-3.5 w-3.5" />}
-              <span>{copied ? 'Copied' : 'Copy link'}</span>
-            </button>
-
-            <button
-              onClick={() => setShowImportLink(s => !s)}
-              className={toolbarBtn}
-              style={{ color: onAccent }}
-            >
-              <LinkIcon className="h-3.5 w-3.5" />
-              <span>From URL</span>
-            </button>
-
-            <label
-              className={`${importing ? 'opacity-50 pointer-events-none' : ''} ${toolbarBtn} cursor-pointer`}
-              style={{ color: onAccent }}
-            >
-              <Upload className="h-3.5 w-3.5" />
-              <span>{importing ? 'Importing…' : 'Upload'}</span>
-              <input type="file" accept=".m3u,.m3u8" className="hidden" onChange={handleFileUpload} />
-            </label>
 
             <button
               onClick={() => { setShowFindReplace(true); setFrSearch(''); setFrReplace(''); setFrResult(null); if (selectedIds.size > 0) setFrScope('selected'); else setFrScope('category'); }}
@@ -669,17 +846,29 @@ export default function PlaylistEditor({ playlistId }: { playlistId: string }) {
               title="Find & Replace"
             >
               <Replace className="h-3.5 w-3.5" />
-              <span>Replace</span>
+              <span className="hidden lg:inline">Replace</span>
             </button>
 
             <button
-              onClick={publishExport}
+              onClick={() => setShowBulkEpg(true)}
+              disabled={channels.length === 0}
+              className={`${toolbarBtn} disabled:opacity-40`}
+              style={{ color: onAccent }}
+              title="Bulk EPG Assignment"
+            >
+              <Wand2 className="h-3.5 w-3.5" />
+              <span className="hidden lg:inline">Assign EPG</span>
+            </button>
+
+            <button
+              onClick={() => setShowExportDialog(true)}
               disabled={channels.length === 0}
               className={`${toolbarBtnOutlined} disabled:opacity-40`}
               style={{ color: onAccent, borderColor: `${onAccent}55`, backgroundColor: 'rgba(0,0,0,0.15)' }}
+              title="Export / Download"
             >
               <Download className="h-3.5 w-3.5" />
-              <span>Download</span>
+              <span className="hidden lg:inline">Export</span>
             </button>
 
             {/* Health check button */}
@@ -701,13 +890,13 @@ export default function PlaylistEditor({ playlistId }: { playlistId: string }) {
                   style={{ color: onAccent }}
                 >
                   <Activity className="h-3.5 w-3.5" />
-                  <span>Check</span>
+                  <span className="hidden lg:inline">Check</span>
                 </button>
               )}
               {showHealthMenu && (
                 <>
                   <div className="fixed inset-0 z-30" onClick={() => setShowHealthMenu(false)} />
-                  <div className="absolute right-0 top-full mt-1 w-52 bg-white dark:bg-[#272727] rounded elev-8 z-40 py-1 text-sm">
+                  <div className="md-menu absolute right-0 top-full mt-1 w-52 bg-white dark:bg-[#272727] rounded elev-8 z-40 py-1 text-sm">
                     <button
                       onClick={() => runHealthCheck(displayedChannels)}
                       className="md-btn w-full flex items-center gap-2.5 px-4 py-2 text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-white/8 text-left"
@@ -750,40 +939,27 @@ export default function PlaylistEditor({ playlistId }: { playlistId: string }) {
               )}
             </div>
 
-            {/* Import-URL popover — deliberately white/dark card, not accent-colored */}
-            {showImportLink && (
-              <div className="absolute top-12 right-0 w-80 bg-white dark:bg-[#272727] rounded elev-8 p-4 z-50">
-                <label className="block text-xs font-medium text-gray-700 dark:text-gray-300 mb-2">M3U URL</label>
-                <input
-                  type="url"
-                  value={importUrl}
-                  onChange={e => setImportUrl(e.target.value)}
-                  placeholder="http://example.com/playlist.m3u"
-                  className="w-full border border-gray-300 dark:border-gray-600 rounded px-3 py-2 text-sm mb-3 focus:outline-none bg-transparent text-gray-900 dark:text-white placeholder-gray-400"
-                  onFocus={e => (e.target.style.borderColor = accentColor)}
-                  onBlur={e => (e.target.style.borderColor = '')}
-                />
-                <div className="flex justify-end gap-1">
-                  <button onClick={() => setShowImportLink(false)} className="md-btn h-8 px-3 rounded text-xs font-medium uppercase tracking-wider text-gray-600 dark:text-gray-400">Cancel</button>
-                  <button onClick={importFromUrl} disabled={!importUrl} className="md-btn h-8 px-3 rounded text-xs font-medium uppercase tracking-wider disabled:opacity-40" style={{ color: accentColor }}>Import</button>
-                </div>
-              </div>
-            )}
+
           </div>
         </div>
       </header>
 
       {/* ── Bulk-selection bar ────────────────────────────────────────────── */}
       {selectedIds.size > 0 && (
-        <div className="shrink-0 h-12 bg-blue-50 dark:bg-blue-900/20 border-b border-blue-200 dark:border-blue-800/50 px-6 flex items-center justify-between gap-4">
-          <span className="text-sm font-medium text-blue-700 dark:text-blue-300">
+        <div
+          className="shrink-0 h-12 border-b px-6 flex items-center justify-between gap-4 transition-colors"
+          style={{ backgroundColor: accentAlpha(accentColor, '15'), borderColor: accentAlpha(accentColor, '30') }}
+        >
+          <span className="text-sm font-medium" style={{ color: accentColor }}>
             {selectedIds.size} selected
           </span>
           <div className="flex items-center gap-2">
             <select
               value={bulkCategory}
               onChange={e => handleBulkMove(e.target.value)}
-              className="text-xs font-medium border border-blue-300 dark:border-blue-700 rounded h-8 px-2 focus:outline-none focus:border-blue-600 bg-white dark:bg-[#1e1e1e] text-gray-700 dark:text-gray-200"
+              className="text-xs font-medium border border-gray-300 dark:border-gray-600 rounded h-8 px-2 focus:outline-none bg-white dark:bg-[#1e1e1e] text-gray-700 dark:text-gray-200"
+              onFocus={e => (e.target.style.borderColor = accentColor)}
+              onBlur={e => (e.target.style.borderColor = '')}
             >
               <option value="">Move to…</option>
               {categories.map(c => <option key={c} value={c}>{c}</option>)}
@@ -812,13 +988,24 @@ export default function PlaylistEditor({ playlistId }: { playlistId: string }) {
           <div className="flex items-center justify-center py-20 text-sm text-gray-400 dark:text-gray-500 animate-pulse">
             Loading channels…
           </div>
+        ) : channels.length === 0 && channelsError ? (
+          <div className="flex flex-col items-center justify-center py-24 text-center">
+            <p className="text-base font-medium text-red-500 dark:text-red-400">{channelsError}</p>
+            <button
+              onClick={() => refetchChannels()}
+              className="mt-5 md-btn flex items-center gap-1.5 h-9 px-4 rounded text-sm font-medium text-white elev-1"
+              style={{ backgroundColor: accentColor }}
+            >
+              Retry
+            </button>
+          </div>
         ) : channels.length === 0 ? (
           <div className="flex flex-col items-center justify-center py-24 text-center">
-            <div className="w-16 h-16 rounded-full bg-blue-50 dark:bg-blue-900/20 flex items-center justify-center mb-4">
-              <Upload className="w-7 h-7 text-blue-500 dark:text-blue-400" />
+            <div className="w-16 h-16 rounded-full flex items-center justify-center mb-4" style={{ backgroundColor: accentAlpha(accentColor, '15') }}>
+              <Layers className="w-7 h-7" style={{ color: accentColor }} />
             </div>
             <p className="text-base font-medium text-gray-700 dark:text-gray-300">No channels yet</p>
-            <p className="mt-1 text-sm text-gray-400 dark:text-gray-500 max-w-xs">Import an M3U file using the Upload or From URL buttons above, or add one manually.</p>
+            <p className="mt-1 text-sm text-gray-400 dark:text-gray-500 max-w-xs">Add channels manually or import them from the Sources tab.</p>
             <button
               onClick={handleAddChannel}
               className="mt-5 md-btn flex items-center gap-1.5 h-9 px-4 rounded text-sm font-medium text-white elev-1"
@@ -884,6 +1071,7 @@ export default function PlaylistEditor({ playlistId }: { playlistId: string }) {
                     rowIndex={i}
                     onRightClick={e => { e.preventDefault(); setContextMenu({ channelId: channel.id, x: e.clientX, y: e.clientY }); }}
                     healthSt={healthStatus.get(channel.id)}
+                    tvgIdLabel={channel.tvgId ? tvgIdLabels[channel.tvgId] : undefined}
                   />
                 ))}
               </SortableContext>
@@ -894,26 +1082,30 @@ export default function PlaylistEditor({ playlistId }: { playlistId: string }) {
 
       {/* Pagination controls */}
       {totalPages > 1 && (
-        <div className="shrink-0 flex items-center justify-between px-6 py-4 border-t border-gray-200 dark:border-white/8 bg-gray-50 dark:bg-[#242424] amoled:dark:bg-[#111]">
-          <span className="text-sm text-gray-500 dark:text-gray-400">
+        <div className="shrink-0 flex items-center justify-between px-6 py-1.5 border-t border-gray-200 dark:border-white/8 bg-white dark:bg-[#1e1e1e] amoled:dark:bg-black">
+          <span className="text-xs text-gray-500 dark:text-gray-400">
             Showing {(currentPage - 1) * pageSize + 1} to {Math.min(currentPage * pageSize, displayedChannels.length)} of {displayedChannels.length} channels
           </span>
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-1">
             <button
               onClick={() => handlePageChange(Math.max(1, currentPage - 1))}
               disabled={currentPage === 1}
-              className="md-btn px-3 py-1.5 rounded text-sm font-medium border border-gray-300 dark:border-gray-600 disabled:opacity-50 text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-white/5"
+              className="md-btn p-1 rounded-full text-gray-600 dark:text-gray-400 disabled:opacity-30 hover:bg-black/5 dark:hover:bg-white/5 disabled:hover:bg-transparent transition-colors"
+              title="Previous Page"
             >
-              Previous
+              <ChevronLeft className="w-4 h-4" />
             </button>
-            <div className="flex items-center gap-1.5 mx-1">
+            <div className="flex items-center gap-1 mx-0.5">
               <input
                 type="number"
                 min={1}
                 max={totalPages}
                 value={pageInputValue}
                 onChange={e => setPageInputValue(e.target.value)}
-                onBlur={() => {
+                className="w-10 text-center bg-transparent border-b-2 border-transparent hover:border-gray-300 dark:hover:border-gray-600 py-0 text-xs font-medium text-gray-900 dark:text-white focus:outline-none transition-colors"
+                onFocus={e => (e.target.style.borderColor = accentColor)}
+                onBlur={e => {
+                  e.target.style.borderColor = 'transparent';
                   const p = parseInt(pageInputValue, 10);
                   if (!isNaN(p) && p >= 1 && p <= totalPages) handlePageChange(p);
                   else setPageInputValue(String(currentPage));
@@ -925,16 +1117,16 @@ export default function PlaylistEditor({ playlistId }: { playlistId: string }) {
                     else setPageInputValue(String(currentPage));
                   }
                 }}
-                className="w-14 text-center border border-gray-300 dark:border-gray-600 rounded py-1 text-sm bg-white dark:bg-[#1e1e1e] text-gray-900 dark:text-white focus:outline-none focus:border-blue-500"
               />
-              <span className="text-sm text-gray-500 dark:text-gray-400 font-medium">/ {totalPages}</span>
+              <span className="text-xs text-gray-500 dark:text-gray-400 font-medium">/ {totalPages}</span>
             </div>
             <button
               onClick={() => handlePageChange(Math.min(totalPages, currentPage + 1))}
               disabled={currentPage === totalPages}
-              className="md-btn px-3 py-1.5 rounded text-sm font-medium border border-gray-300 dark:border-gray-600 disabled:opacity-50 text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-white/5"
+              className="md-btn p-1 rounded-full text-gray-600 dark:text-gray-400 disabled:opacity-30 hover:bg-black/5 dark:hover:bg-white/5 disabled:hover:bg-transparent transition-colors"
+              title="Next Page"
             >
-              Next
+              <ChevronRight className="w-4 h-4" />
             </button>
           </div>
         </div>
@@ -944,6 +1136,7 @@ export default function PlaylistEditor({ playlistId }: { playlistId: string }) {
       {/* ── Context menu ─────────────────────────────────────────────────── */}
       {contextMenu && (
         <div
+          ref={contextMenuRef}
           className="fixed z-50 bg-white dark:bg-[#272727] rounded elev-8 py-1 min-w-[200px]"
           style={{ top: contextMenu.y, left: contextMenu.x }}
           onMouseDown={e => e.stopPropagation()}
@@ -980,7 +1173,9 @@ export default function PlaylistEditor({ playlistId }: { playlistId: string }) {
                   if (e.key === 'Escape') { setShowCategoryPrompt(false); setBulkCategory(''); }
                 }}
                 placeholder="Category name"
-                className="w-full border border-gray-400 dark:border-gray-500 rounded px-3 py-2.5 text-sm focus:outline-none focus:border-blue-700 dark:focus:border-blue-400 bg-transparent text-gray-900 dark:text-white placeholder-gray-400"
+                className="w-full border border-gray-400 dark:border-gray-500 rounded px-3 py-2.5 text-sm focus:outline-none bg-transparent text-gray-900 dark:text-white placeholder-gray-400"
+                onFocus={e => (e.target.style.borderColor = accentColor)}
+                onBlur={e => (e.target.style.borderColor = '')}
               />
             </div>
             <div className="flex justify-end gap-1 px-4 py-4">
@@ -988,7 +1183,8 @@ export default function PlaylistEditor({ playlistId }: { playlistId: string }) {
               <button
                 onClick={() => { executeBulkMove(newBulkCategoryName.trim()); setShowCategoryPrompt(false); }}
                 disabled={!newBulkCategoryName.trim()}
-                className="md-btn h-9 px-4 rounded text-xs font-medium uppercase tracking-wider text-blue-700 dark:text-blue-400 disabled:opacity-40"
+                className="md-btn h-9 px-4 rounded text-xs font-medium uppercase tracking-wider disabled:opacity-40"
+                style={{ color: accentColor }}
               >
                 Move
               </button>
@@ -998,9 +1194,85 @@ export default function PlaylistEditor({ playlistId }: { playlistId: string }) {
       )}
 
       {/* ── Dialog: Bulk delete ───────────────────────────────────────────── */}
+      {/* ── Dialog: Export / Download ────────────────────────────────────── */}
+      {showExportDialog && (
+        <div
+          className="md-scrim fixed inset-0 z-50 flex items-center justify-center bg-black/50 px-4"
+          onClick={() => setShowExportDialog(false)}
+        >
+          <div
+            className="md-dialog w-full max-w-md bg-white dark:bg-[#272727] amoled:dark:bg-[#1a1a1a] rounded elev-24 overflow-hidden"
+            onClick={e => e.stopPropagation()}
+          >
+            {/* Header */}
+            <div className="flex items-center justify-between px-6 pt-5 pb-4">
+              <h2 className="text-lg font-medium text-gray-900 dark:text-white">Export Playlist</h2>
+              <button
+                onClick={() => setShowExportDialog(false)}
+                className="md-btn p-1.5 rounded-full text-gray-400 hover:text-gray-600 dark:hover:text-gray-200"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+
+            <div className="px-6 pb-6 space-y-4">
+              {/* M3U Playlist link */}
+              <div>
+                <p className="text-xs font-medium uppercase tracking-[0.12em] text-gray-500 dark:text-gray-400 mb-2">M3U Playlist</p>
+                <div className="flex items-center gap-2 px-3 py-2.5 rounded-lg bg-gray-100 dark:bg-white/6 border border-gray-200 dark:border-white/10">
+                  <span className="flex-1 min-w-0 text-sm font-mono text-gray-700 dark:text-gray-300 truncate" title={exportUrl}>
+                    {exportUrl}
+                  </span>
+                  <button
+                    onClick={copyToClipboard}
+                    className="md-btn shrink-0 p-1.5 rounded-full text-gray-500 dark:text-gray-400 hover:text-gray-800 dark:hover:text-white transition-colors"
+                    title="Copy playlist link"
+                  >
+                    {copied ? <Check className="h-4 w-4" style={{ color: accentColor }} /> : <Copy className="h-4 w-4" />}
+                  </button>
+                  <a
+                    href={exportUrl}
+                    download={`${playlist.name}.m3u`}
+                    className="md-btn shrink-0 p-1.5 rounded-full text-gray-500 dark:text-gray-400 hover:text-gray-800 dark:hover:text-white transition-colors"
+                    title="Download playlist"
+                  >
+                    <Download className="h-4 w-4" />
+                  </a>
+                </div>
+              </div>
+
+              {/* EPG / XMLTV link */}
+              <div>
+                <p className="text-xs font-medium uppercase tracking-[0.12em] text-gray-500 dark:text-gray-400 mb-2">EPG / XMLTV</p>
+                <div className="flex items-center gap-2 px-3 py-2.5 rounded-lg bg-gray-100 dark:bg-white/6 border border-gray-200 dark:border-white/10">
+                  <span className="flex-1 min-w-0 text-sm font-mono text-gray-700 dark:text-gray-300 truncate" title={epgUrl}>
+                    {epgUrl}
+                  </span>
+                  <button
+                    onClick={copyEpgToClipboard}
+                    className="md-btn shrink-0 p-1.5 rounded-full text-gray-500 dark:text-gray-400 hover:text-gray-800 dark:hover:text-white transition-colors"
+                    title="Copy EPG link"
+                  >
+                    {copiedEpg ? <Check className="h-4 w-4" style={{ color: accentColor }} /> : <Copy className="h-4 w-4" />}
+                  </button>
+                  <a
+                    href={epgUrl}
+                    download={`${playlist.name}.xml`}
+                    className="md-btn shrink-0 p-1.5 rounded-full text-gray-500 dark:text-gray-400 hover:text-gray-800 dark:hover:text-white transition-colors"
+                    title="Download EPG"
+                  >
+                    <Download className="h-4 w-4" />
+                  </a>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
       {showBulkDeleteConfirm && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 px-4">
-          <div className="w-full max-w-sm bg-white dark:bg-[#272727] amoled:dark:bg-[#1a1a1a] rounded elev-24">
+        <div className="md-scrim fixed inset-0 z-50 flex items-center justify-center bg-black/50 px-4">
+          <div className="md-dialog w-full max-w-sm bg-white dark:bg-[#272727] amoled:dark:bg-[#1a1a1a] rounded elev-24">
             <h2 className="text-xl font-medium text-gray-900 dark:text-white px-6 pt-6 pb-2">Delete Channels</h2>
             <p className="text-sm text-gray-600 dark:text-gray-400 px-6 pb-6">
               Delete {selectedIds.size} selected channel{selectedIds.size !== 1 ? 's' : ''}?
@@ -1012,6 +1284,21 @@ export default function PlaylistEditor({ playlistId }: { playlistId: string }) {
           </div>
         </div>
       )}
+
+      {/* ── Dialog: Bulk EPG Assignment ─────────────────────────────────── */}
+      <BulkEpgAssignDialog
+        open={showBulkEpg}
+        onClose={() => {
+          setShowBulkEpg(false);
+          // Re-resolve labels since assignments may have changed
+          const tvgIds = channels.map(c => c.tvgId).filter(Boolean) as string[];
+          if (tvgIds.length > 0) api.resolveTvgIds([...new Set(tvgIds)]).then(setTvgIdLabels).catch(e => { console.error(e); notifyError(e, 'Failed to resolve EPG channel names.'); });
+          triggerRefresh();
+        }}
+        playlistId={playlistId}
+        channels={channels}
+        activeCategory={activeCategory}
+      />
 
       {/* ── Dialog: Find & Replace ──────────────────────────────────────── */}
       {showFindReplace && (() => {
@@ -1039,7 +1326,7 @@ export default function PlaylistEditor({ playlistId }: { playlistId: string }) {
             const result = await api.bulkReplace(playlistId, frSearch, frReplace, frField, ids);
             setFrResult({ modified: result.modified });
             if (result.modified > 0) triggerRefresh();
-          } catch (e) { console.error(e); }
+          } catch (e) { console.error(e); notifyError(e, 'Failed to replace text.'); }
           finally { setFrRunning(false); }
         };
 
@@ -1060,7 +1347,9 @@ export default function PlaylistEditor({ playlistId }: { playlistId: string }) {
                     value={frSearch}
                     onChange={e => { setFrSearch(e.target.value); setFrResult(null); }}
                     placeholder={`Text to find in ${frField === 'url' ? 'URLs' : 'names'}…`}
-                    className="w-full border border-gray-300 dark:border-gray-600 rounded px-3 py-2.5 text-sm font-mono focus:outline-none focus:border-blue-600 dark:focus:border-blue-400 bg-transparent text-gray-900 dark:text-white placeholder-gray-400"
+                    className="w-full border border-gray-300 dark:border-gray-600 rounded px-3 py-2.5 text-sm font-mono focus:outline-none bg-transparent text-gray-900 dark:text-white placeholder-gray-400"
+                    onFocus={e => (e.target.style.borderColor = accentColor)}
+                    onBlur={e => (e.target.style.borderColor = '')}
                   />
                 </div>
 
@@ -1071,7 +1360,9 @@ export default function PlaylistEditor({ playlistId }: { playlistId: string }) {
                     value={frReplace}
                     onChange={e => { setFrReplace(e.target.value); setFrResult(null); }}
                     placeholder="Replacement text…"
-                    className="w-full border border-gray-300 dark:border-gray-600 rounded px-3 py-2.5 text-sm font-mono focus:outline-none focus:border-blue-600 dark:focus:border-blue-400 bg-transparent text-gray-900 dark:text-white placeholder-gray-400"
+                    className="w-full border border-gray-300 dark:border-gray-600 rounded px-3 py-2.5 text-sm font-mono focus:outline-none bg-transparent text-gray-900 dark:text-white placeholder-gray-400"
+                    onFocus={e => (e.target.style.borderColor = accentColor)}
+                    onBlur={e => (e.target.style.borderColor = '')}
                   />
                 </div>
 
@@ -1081,7 +1372,9 @@ export default function PlaylistEditor({ playlistId }: { playlistId: string }) {
                   <select
                     value={frField}
                     onChange={e => { setFrField(e.target.value as 'url' | 'name'); setFrResult(null); }}
-                    className="w-full border border-gray-300 dark:border-gray-600 rounded px-3 py-2.5 text-sm focus:outline-none focus:border-blue-600 dark:focus:border-blue-400 bg-transparent text-gray-900 dark:text-white"
+                    className="w-full border border-gray-300 dark:border-gray-600 rounded px-3 py-2.5 text-sm focus:outline-none bg-transparent text-gray-900 dark:text-white"
+                    onFocus={e => (e.target.style.borderColor = accentColor)}
+                    onBlur={e => (e.target.style.borderColor = '')}
                   >
                     <option value="url">Stream URL</option>
                     <option value="name">Channel Name</option>
@@ -1095,14 +1388,14 @@ export default function PlaylistEditor({ playlistId }: { playlistId: string }) {
                     <label className="flex items-center gap-2.5 px-3 py-2 rounded hover:bg-gray-50 dark:hover:bg-white/5 cursor-pointer">
                       <input type="radio" name="fr-scope" value="playlist" checked={frScope === 'playlist'}
                         onChange={() => { setFrScope('playlist'); setFrResult(null); }}
-                        className="accent-blue-600" />
+                         />
                       <span className="text-sm text-gray-700 dark:text-gray-200">All channels in playlist</span>
                       <span className="ml-auto text-xs text-gray-400 tabular-nums">{channels.length}</span>
                     </label>
                     <label className="flex items-center gap-2.5 px-3 py-2 rounded hover:bg-gray-50 dark:hover:bg-white/5 cursor-pointer">
                       <input type="radio" name="fr-scope" value="category" checked={frScope === 'category'}
                         onChange={() => { setFrScope('category'); setFrResult(null); }}
-                        className="accent-blue-600" />
+                         />
                       <span className="text-sm text-gray-700 dark:text-gray-200">All in this category</span>
                       <span className="ml-auto text-xs text-gray-400">{activeCategory ?? '—'}</span>
                     </label>
@@ -1110,7 +1403,7 @@ export default function PlaylistEditor({ playlistId }: { playlistId: string }) {
                       <input type="radio" name="fr-scope" value="selected" checked={frScope === 'selected'}
                         onChange={() => { if (selectedIds.size > 0) { setFrScope('selected'); setFrResult(null); } }}
                         disabled={selectedIds.size === 0}
-                        className="accent-blue-600" />
+                         />
                       <span className="text-sm text-gray-700 dark:text-gray-200">Selected channels only</span>
                       {selectedIds.size > 0 ? (
                         <span className="ml-auto text-xs text-gray-400 tabular-nums">{selectedIds.size}</span>
@@ -1126,11 +1419,7 @@ export default function PlaylistEditor({ playlistId }: { playlistId: string }) {
                 {frSearch && (
                   <div className="flex items-center gap-2 px-3 py-2.5 rounded bg-gray-50 dark:bg-white/5">
                     <Search className="h-3.5 w-3.5 text-gray-400 shrink-0" />
-                    <span className={`text-sm font-medium tabular-nums ${
-                      matchCount > 0
-                        ? 'text-blue-700 dark:text-blue-400'
-                        : 'text-gray-400 dark:text-gray-500'
-                    }`}>
+                    <span className="text-sm font-medium tabular-nums" style={{ color: matchCount > 0 ? accentColor : undefined }}>
                       {matchCount} of {scopeChannels.length} channel{scopeChannels.length !== 1 ? 's' : ''} match
                     </span>
                   </div>

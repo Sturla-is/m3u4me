@@ -9,7 +9,7 @@ interface LockScreenProps {
 }
 
 export default function LockScreen({ onUnlock }: LockScreenProps) {
-  const { accentColor, logoBgColor } = useStore();
+  const { accentColor } = useStore();
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
@@ -71,7 +71,7 @@ export default function LockScreen({ onUnlock }: LockScreenProps) {
   if (newRecoveryKey) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-gray-100 dark:bg-[#121212] amoled:dark:bg-black px-4">
-        <div className="w-full max-w-sm bg-white dark:bg-[#272727] amoled:dark:bg-[#1a1a1a] rounded-lg elev-24 overflow-hidden">
+        <div className="md-dialog w-full max-w-sm bg-white dark:bg-[#272727] amoled:dark:bg-[#1a1a1a] rounded-lg elev-24 overflow-hidden">
           <div className="px-6 pt-8 pb-4 text-center">
             <div className="mx-auto w-12 h-12 rounded-full flex items-center justify-center mb-4" style={{ backgroundColor: accentColor + '18' }}>
               <KeyRound className="h-6 w-6" style={{ color: accentColor }} />
@@ -111,7 +111,7 @@ export default function LockScreen({ onUnlock }: LockScreenProps) {
   if (isRecovery) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-gray-100 dark:bg-[#121212] amoled:dark:bg-black px-4">
-        <div className="w-full max-w-sm bg-white dark:bg-[#272727] amoled:dark:bg-[#1a1a1a] rounded-lg elev-24 overflow-hidden">
+        <div className="md-dialog w-full max-w-sm bg-white dark:bg-[#272727] amoled:dark:bg-[#1a1a1a] rounded-lg elev-24 overflow-hidden">
           <div className="px-6 pt-8 pb-4 text-center">
             <div className="mx-auto w-12 h-12 rounded-full flex items-center justify-center mb-4" style={{ backgroundColor: accentColor + '18' }}>
               <KeyRound className="h-6 w-6" style={{ color: accentColor }} />
@@ -227,7 +227,7 @@ export default function LockScreen({ onUnlock }: LockScreenProps) {
           </button>
           <button
             onClick={() => { setIsRecovery(true); setError(''); setPassword(''); }}
-            className="w-full text-center text-xs py-2 transition-colors"
+            className="md-btn w-full text-center text-xs py-2 rounded transition-colors"
             style={{ color: accentColor }}
           >
             Forgot password?

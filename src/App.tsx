@@ -3,13 +3,18 @@ import { AuthProvider } from './contexts/AuthContext';
 import Dashboard from './components/Dashboard';
 import LockScreen from './components/LockScreen';
 import SettingsPage from './components/SettingsPage';
-import { useStore } from './store';
-import { api, getSessionToken, clearSessionToken } from './apiClient';
+import { useStore, notifyError } from './store';
+import { api, getSessionToken } from './apiClient';
+import { updateFavicon } from './utils/favicon';
 
 function AppContent() {
-  const { isDarkMode, isAmoledMode, showSettings } = useStore();
+  const { isDarkMode, isAmoledMode, showSettings, accentColor } = useStore();
   const [authChecked, setAuthChecked] = useState(false);
   const [locked, setLocked] = useState(false);
+
+  useEffect(() => {
+    updateFavicon(accentColor);
+  }, [accentColor]);
 
   useEffect(() => {
     if (isDarkMode) {
@@ -33,7 +38,11 @@ function AppContent() {
         setLocked(true);
       }
       setAuthChecked(true);
-    }).catch(() => setAuthChecked(true));
+    }).catch((e) => {
+      console.error(e);
+      notifyError(e, 'Could not connect to the server. Some data may fail to load.');
+      setAuthChecked(true);
+    });
   }, []);
 
   // Listen for auth-expired events (401 from API)

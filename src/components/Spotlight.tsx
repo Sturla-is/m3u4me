@@ -1,18 +1,33 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { api } from '../apiClient';
-import { useStore } from '../store';
-import { Search, Tv, EyeOff } from 'lucide-react';
+import { api, SearchResult } from '../apiClient';
+import { useStore, notifyError } from '../store';
+import { Search, EyeOff, FileAudio, Layers, Radio } from 'lucide-react';
+import ChannelLogo from './ChannelLogo';
+import { useDebouncedValue } from '../utils/useDebouncedValue';
 
-interface SearchResult {
-  id: string;
-  playlistId: string;
-  playlistName: string;
-  name: string;
-  url: string;
-  tvgId: string | null;
-  logo: string | null;
-  category: string;
-  isHidden?: boolean;
+// Level-1 grouping metadata, in the fixed display order the hierarchy always uses —
+// My Playlists, then Sources, then EPG — regardless of which kind has the most hits.
+// Icons mirror the ones Dashboard already uses for each tab's empty state/sidebar
+// section, so a result's origin is recognizable at a glance.
+const KIND_META: Record<SearchResult['kind'], { label: string; icon: typeof Search }> = {
+  playlist: { label: 'My Playlists', icon: FileAudio },
+  channelPool: { label: 'Sources', icon: Layers },
+  epg: { label: 'EPG', icon: Radio },
+};
+const KIND_ORDER: SearchResult['kind'][] = ['playlist', 'channelPool', 'epg'];
+
+interface CategoryGroup {
+  category: string | null;
+  items: SearchResult[];
+}
+interface ContainerGroup {
+  containerId: string;
+  containerName: string;
+  categories: CategoryGroup[];
+}
+interface KindGroup {
+  kind: SearchResult['kind'];
+  containers: ContainerGroup[];
 }
 
 function highlight(text: string, query: string) {
@@ -31,23 +46,28 @@ function highlight(text: string, query: string) {
 }
 
 export default function Spotlight({ onNavigate }: {
-  onNavigate: (playlistId: string, category: string, channelId: string) => void;
+  onNavigate: (result: SearchResult) => void;
 }) {
   const { accentColor, logoBgColor } = useStore();
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState('');
   const [results, setResults] = useState<SearchResult[]>([]);
-  const [activeIndex, setActiveIndex] = useState(0);
+  // -1 means "nothing highlighted" — results start with no row picked out, rather than
+  // defaulting to the first one, so the highlight only ever appears once the user actually
+  // does something (hover a row or press an arrow key). Both hover and keyboard nav drive
+  // this same index — there's only ever one highlighted row, never a hover highlight and a
+  // separate "active" highlight showing at once.
+  const [activeIndex, setActiveIndex] = useState(-1);
   const [loading, setLoading] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
-  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const debouncedQuery = useDebouncedValue(query, 180);
 
   const close = useCallback(() => {
     setOpen(false);
     setQuery('');
     setResults([]);
-    setActiveIndex(0);
+    setActiveIndex(-1);
   }, []);
 
   // Open on Cmd/Ctrl+K
@@ -67,57 +87,82 @@ export default function Spotlight({ onNavigate }: {
     if (open) setTimeout(() => inputRef.current?.focus(), 30);
   }, [open]);
 
+  // Clears results immediately when the query is emptied, rather than waiting out the
+  // debounce below; otherwise shows the loading spinner right away while it waits.
+  useEffect(() => {
+    if (!query.trim()) { setResults([]); setLoading(false); }
+    else { setLoading(true); }
+  }, [query]);
+
   // Debounced search
   useEffect(() => {
-    if (debounceRef.current) clearTimeout(debounceRef.current);
-    if (!query.trim()) { setResults([]); setLoading(false); return; }
-    setLoading(true);
-    debounceRef.current = setTimeout(async () => {
-      try {
-        const data = await api.search(query);
-        setResults(data);
-        setActiveIndex(0);
-      } catch { setResults([]); }
-      finally { setLoading(false); }
-    }, 180);
-    return () => { if (debounceRef.current) clearTimeout(debounceRef.current); };
-  }, [query]);
+    if (!debouncedQuery.trim()) return;
+    api.search(debouncedQuery).then(data => {
+      setResults(data);
+      setActiveIndex(-1);
+    }).catch(e => {
+      console.error(e);
+      setResults([]);
+      notifyError(e, 'Search failed.');
+    }).finally(() => setLoading(false));
+  }, [debouncedQuery]);
 
   // Scroll active item into view
   useEffect(() => {
+    if (activeIndex === -1) return;
     const el = listRef.current?.querySelector(`[data-idx="${activeIndex}"]`);
     el?.scrollIntoView({ block: 'nearest' });
   }, [activeIndex]);
 
   const select = (r: SearchResult) => {
-    onNavigate(r.playlistId, r.category, r.id);
+    onNavigate(r);
     close();
   };
 
+  // Group results into a 3-level tree — kind → container → category — in that fixed
+  // kind order, then flatten back out in the same order the tree renders in. Keyboard
+  // nav/activeIndex walk `orderedResults` rather than the raw `results` from the API:
+  // the API can interleave items from different playlists/sources (channels are appended
+  // to a flat array as they're created), so without this, arrow-key highlighting could
+  // jump to a result that isn't actually next on screen.
+  const groups: KindGroup[] = [];
+  for (const kind of KIND_ORDER) {
+    const containers: ContainerGroup[] = [];
+    for (const r of results) {
+      if (r.kind !== kind) continue;
+      let container = containers.find(c => c.containerId === r.containerId);
+      if (!container) {
+        container = { containerId: r.containerId, containerName: r.containerName, categories: [] };
+        containers.push(container);
+      }
+      let catGroup = container.categories.find(c => c.category === r.category);
+      if (!catGroup) {
+        catGroup = { category: r.category, items: [] };
+        container.categories.push(catGroup);
+      }
+      catGroup.items.push(r);
+    }
+    if (containers.length > 0) groups.push({ kind, containers });
+  }
+  const orderedResults = groups.flatMap(g => g.containers.flatMap(c => c.categories.flatMap(cat => cat.items)));
+
   const handleKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === 'ArrowDown') { e.preventDefault(); setActiveIndex(i => Math.min(i + 1, results.length - 1)); }
-    else if (e.key === 'ArrowUp') { e.preventDefault(); setActiveIndex(i => Math.max(i - 1, 0)); }
-    else if (e.key === 'Enter' && results[activeIndex]) select(results[activeIndex]);
+    if (e.key === 'ArrowDown') { e.preventDefault(); setActiveIndex(i => i === -1 ? 0 : Math.min(i + 1, orderedResults.length - 1)); }
+    else if (e.key === 'ArrowUp') { e.preventDefault(); setActiveIndex(i => i === -1 ? 0 : Math.max(i - 1, 0)); }
+    else if (e.key === 'Enter' && orderedResults[activeIndex]) select(orderedResults[activeIndex]);
     else if (e.key === 'Escape') close();
   };
 
   if (!open) return null;
 
-  // Group results by playlist
-  const grouped: Record<string, SearchResult[]> = {};
-  for (const r of results) {
-    if (!grouped[r.playlistName]) grouped[r.playlistName] = [];
-    grouped[r.playlistName].push(r);
-  }
-
   return (
     <div
-      className="fixed inset-0 z-[60] flex items-start justify-center pt-[15vh] px-4"
+      className="md-scrim fixed inset-0 z-[60] flex items-start justify-center pt-[15vh] px-4"
       style={{ backgroundColor: 'rgba(0,0,0,0.55)', backdropFilter: 'blur(4px)' }}
       onMouseDown={e => { if (e.target === e.currentTarget) close(); }}
     >
       <div
-        className="w-full max-w-xl bg-white/90 dark:bg-[#1e1e1e]/95 amoled:dark:bg-[#111]/95 rounded-2xl overflow-hidden"
+        className="md-dialog-top w-full max-w-xl bg-white/90 dark:bg-[#1e1e1e]/95 amoled:dark:bg-[#111]/95 rounded-2xl overflow-hidden"
         style={{ boxShadow: '0 32px 80px rgba(0,0,0,0.45), 0 0 0 1px rgba(0,0,0,0.08)' }}
       >
         {/* Search input */}
@@ -147,7 +192,7 @@ export default function Spotlight({ onNavigate }: {
           {!query.trim() ? (
             <div className="flex flex-col items-center justify-center py-10 text-sm text-gray-400 dark:text-gray-500 gap-2">
               <Search className="h-8 w-8 opacity-30" />
-              <span>Type to search across all playlists</span>
+              <span>Type to search across playlists, sources &amp; EPG</span>
             </div>
           ) : results.length === 0 && !loading ? (
             <div className="flex flex-col items-center justify-center py-10 text-sm text-gray-400 dark:text-gray-500 gap-2">
@@ -155,66 +200,98 @@ export default function Spotlight({ onNavigate }: {
             </div>
           ) : (
             <div className="pb-2">
-              {Object.entries(grouped).map(([playlistName, items]) => (
-                <div key={playlistName}>
-                  {/* Group header */}
-                  <div className="px-5 pt-3 pb-1 text-[10px] font-semibold uppercase tracking-[0.12em] text-gray-400 dark:text-gray-500">
-                    {playlistName}
-                  </div>
-                  {items.map(r => {
-                    const globalIdx = results.indexOf(r);
-                    const isActive = globalIdx === activeIndex;
-                    return (
-                      <div
-                        key={r.id}
-                        data-idx={globalIdx}
-                        onMouseEnter={() => setActiveIndex(globalIdx)}
-                        onClick={() => select(r)}
-                        className="flex items-center gap-3 mx-2 px-3 py-2.5 rounded-xl cursor-pointer transition-colors"
-                        style={isActive ? { backgroundColor: `${accentColor}18` } : undefined}
-                      >
-                        {/* Logo / icon */}
-                        <div
-                          className="w-9 h-7 shrink-0 rounded overflow-hidden flex items-center justify-center border border-gray-200/60 dark:border-white/8"
-                          style={{ backgroundColor: logoBgColor === 'transparent' ? undefined : logoBgColor }}
-                        >
-                          {r.logo
-                            ? <img src={r.logo} alt="" className="w-full h-full object-contain" onError={e => { e.currentTarget.style.display = 'none'; }} />
-                            : <Tv className="h-3.5 w-3.5 text-gray-400 dark:text-gray-500" />
-                          }
+              {groups.map(({ kind, containers }) => {
+                const { label, icon: KindIcon } = KIND_META[kind];
+                return (
+                  <div key={kind}>
+                    {/* Level 1: which tab this came from. Sticky headers stack — each
+                        level pins directly below the one(s) above it (top-0/top-10/top-18
+                        match the h-10/h-8/h-8 heights exactly) — and since every header
+                        sits as the first child of the div that also wraps the rest of
+                        its own group's content, it naturally scrolls away the moment
+                        that group ends and the next one's header takes its place. All
+                        three share the same left padding rather than staggering deeper —
+                        weight/case/color carry the hierarchy instead of indentation, so
+                        they stay easy to read at a glance. */}
+                    <div className="sticky top-0 z-30 flex items-center gap-2 h-10 px-5 text-sm font-bold uppercase tracking-wide text-gray-700 dark:text-gray-200 bg-white/90 dark:bg-[#1e1e1e]/95 amoled:dark:bg-[#111]/95 border-b border-gray-200/70 dark:border-white/8">
+                      <KindIcon className="h-4 w-4" />
+                      {label}
+                    </div>
+                    {containers.map(container => (
+                      <div key={container.containerId}>
+                        {/* Level 2: the specific playlist / source / EPG source */}
+                        <div className="sticky top-10 z-20 flex items-center h-8 px-5 text-sm font-semibold uppercase tracking-wide text-gray-600 dark:text-gray-300 bg-white/90 dark:bg-[#1e1e1e]/95 amoled:dark:bg-[#111]/95 border-b border-gray-200/70 dark:border-white/8">
+                          {container.containerName}
                         </div>
-
-                        {/* Text */}
-                        <div className="flex-1 min-w-0">
-                          <div className="flex items-center gap-2">
-                            <span className={`text-sm font-medium truncate ${isActive ? '' : 'text-gray-900 dark:text-white'}`} style={isActive ? { color: accentColor } : undefined}>
-                              {highlight(r.name || 'Unnamed', query)}
-                            </span>
-                            {r.isHidden && <EyeOff className="h-3 w-3 shrink-0 text-amber-500" />}
-                          </div>
-                          <div className="flex items-center gap-2 mt-0.5">
-                            {r.url && (
-                              <span className="text-[11px] font-mono text-gray-400 dark:text-gray-500 truncate">
-                                {highlight(r.url, query)}
-                              </span>
+                        {container.categories.map(catGroup => (
+                          <div key={catGroup.category ?? '_none'}>
+                            {/* Level 3: category within that playlist/source — EPG
+                                sources have no categories, so catGroup.category is
+                                always null there and this header is skipped. */}
+                            {catGroup.category && (
+                              <div className="sticky top-18 z-10 flex items-center h-8 px-5 text-sm font-medium text-gray-500 dark:text-gray-400 bg-white/90 dark:bg-[#1e1e1e]/95 amoled:dark:bg-[#111]/95 border-b border-gray-200/70 dark:border-white/8">
+                                {catGroup.category}
+                              </div>
                             )}
-                            {r.tvgId && (
-                              <span className="shrink-0 text-[10px] font-mono px-1.5 py-px rounded bg-gray-100 dark:bg-white/8 text-gray-500 dark:text-gray-400">
-                                {highlight(r.tvgId, query)}
-                              </span>
-                            )}
-                          </div>
-                        </div>
+                            {catGroup.items.map(r => {
+                              const globalIdx = orderedResults.indexOf(r);
+                              const isActive = globalIdx === activeIndex;
+                              return (
+                                <div
+                                  // Index rather than a data id: EPG sources can legitimately
+                                  // list the same channel id more than once (seen in practice —
+                                  // e.g. duplicate <channel id="bbcone.nl"> entries within one
+                                  // XMLTV source), so id-based keys aren't reliably unique. Rows
+                                  // are stateless and the whole list is rebuilt on every new
+                                  // search anyway, so the render-stable position is fine as a key.
+                                  key={globalIdx}
+                                  data-idx={globalIdx}
+                                  onMouseEnter={() => setActiveIndex(globalIdx)}
+                                  onMouseLeave={() => setActiveIndex(i => (i === globalIdx ? -1 : i))}
+                                  onClick={() => select(r)}
+                                  className="flex items-center gap-3 mx-2 px-3 py-2.5 rounded-xl cursor-pointer transition-colors"
+                                  style={isActive ? { backgroundColor: `${accentColor}18` } : undefined}
+                                >
+                                  {/* Logo — same fallback-to-initials component used in
+                                      the Sources/EPG list views, for visual consistency. */}
+                                  <ChannelLogo
+                                    logo={r.logo}
+                                    name={r.name}
+                                    logoBgColor={logoBgColor}
+                                    className="w-9 h-7 shrink-0 rounded border border-gray-200/60 dark:border-white/8"
+                                  />
 
-                        {/* Category pill */}
-                        <span className="shrink-0 text-[10px] font-medium px-2 py-0.5 rounded-full bg-gray-100 dark:bg-white/8 text-gray-500 dark:text-gray-400 hidden sm:inline">
-                          {r.category}
-                        </span>
+                                  {/* Text */}
+                                  <div className="flex-1 min-w-0">
+                                    <div className="flex items-center gap-2">
+                                      <span className={`text-sm font-medium truncate ${isActive ? '' : 'text-gray-900 dark:text-white'}`} style={isActive ? { color: accentColor } : undefined}>
+                                        {highlight(r.name || 'Unnamed', query)}
+                                      </span>
+                                      {r.isHidden && <EyeOff className="h-3 w-3 shrink-0 text-amber-500" />}
+                                    </div>
+                                    <div className="flex items-center gap-2 mt-0.5">
+                                      {r.url && (
+                                        <span className="text-[11px] font-mono text-gray-400 dark:text-gray-500 truncate">
+                                          {highlight(r.url, query)}
+                                        </span>
+                                      )}
+                                      {r.tvgId && (
+                                        <span className="shrink-0 text-[10px] font-mono px-1.5 py-px rounded bg-gray-100 dark:bg-white/8 text-gray-500 dark:text-gray-400">
+                                          {highlight(r.tvgId, query)}
+                                        </span>
+                                      )}
+                                    </div>
+                                  </div>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        ))}
                       </div>
-                    );
-                  })}
-                </div>
-              ))}
+                    ))}
+                  </div>
+                );
+              })}
             </div>
           )}
         </div>

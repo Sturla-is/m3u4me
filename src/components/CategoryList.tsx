@@ -1,5 +1,5 @@
 import React, { useMemo, useState, useEffect, useRef } from 'react';
-import { useStore, accentAlpha } from '../store';
+import { useStore, accentAlpha, notifyError } from '../store';
 import { usePlaylists, useChannels, api, triggerRefresh } from '../apiClient';
 import {
   DndContext,
@@ -78,7 +78,8 @@ function SortableCategoryItem({
               if (e.key === 'Enter') onRenameConfirm();
               if (e.key === 'Escape') onRenameCancel();
             }}
-            className="flex-1 min-w-0 text-sm font-medium bg-transparent border-b-2 border-blue-600 dark:border-blue-400 focus:outline-none text-gray-900 dark:text-white px-0.5"
+            className="flex-1 min-w-0 text-sm font-medium bg-transparent border-b-2 focus:outline-none text-gray-900 dark:text-white px-0.5"
+            style={{ borderColor: accentColor }}
           />
         </div>
       ) : (
@@ -130,7 +131,7 @@ export default function CategoryList({ playlistId }: { playlistId: string }) {
     return cats;
   }, [channels]);
 
-  const categories = useMemo(() => {
+  const baseCategories = useMemo(() => {
     const savedCats = playlist?.categories || [];
     const orderedCats: string[] = [];
     const seen = new Set<string>();
@@ -139,12 +140,25 @@ export default function CategoryList({ playlistId }: { playlistId: string }) {
     return orderedCats;
   }, [playlist?.categories, availableCats]);
 
+  const [localOrder, setLocalOrder] = useState<string[] | null>(null);
+  useEffect(() => { setLocalOrder(null); }, [playlist?.categories, availableCats]);
+  const categories = localOrder ?? baseCategories;
+
+  // Rename/delete/add below write the full categories array themselves, in one shot.
+  // While one of those is in flight, channels and the playlist can refetch independently
+  // (both ride the same global refresh bus) and briefly disagree with each other — e.g.
+  // a channel's category already updated but the playlist's saved category list hasn't
+  // caught up yet. If the auto-sync effect below ran during that window it would merge
+  // the stale old name back in as a phantom empty category, so it's suppressed for the
+  // duration of any explicit mutation.
+  const mutatingCategoriesRef = useRef(false);
+
   useEffect(() => {
-    if (!playlist) return;
+    if (!playlist || mutatingCategoriesRef.current) return;
     const same = playlist.categories?.length === categories.length
       && playlist.categories?.every((c, i) => c === categories[i]);
     if (!same && categories.length > 0) {
-      api.updatePlaylist(playlistId, { categories }).then(triggerRefresh).catch(console.error);
+      api.updatePlaylist(playlistId, { categories }).then(triggerRefresh).catch(e => { console.error(e); notifyError(e, 'Failed to save category order.'); });
     }
   }, [categories, playlist]);
 
@@ -171,10 +185,16 @@ export default function CategoryList({ playlistId }: { playlistId: string }) {
     const { active, over } = event;
     if (over && active.id !== over.id) {
       const newArray = arrayMove(categories, categories.indexOf(active.id as string), categories.indexOf(over.id as string));
+      setLocalOrder(newArray);
+      mutatingCategoriesRef.current = true;
       try {
         await api.updatePlaylist(playlistId, { categories: newArray });
         triggerRefresh();
-      } catch (e) { console.error(e); }
+      } catch (e) {
+        console.error(e);
+        notifyError(e, 'Failed to save category order.');
+        setLocalOrder(null);
+      } finally { mutatingCategoriesRef.current = false; }
     }
   };
 
@@ -183,14 +203,21 @@ export default function CategoryList({ playlistId }: { playlistId: string }) {
     const newName = renameValue.trim();
     setRenamingCategory(null);
     if (!oldName || !newName || newName === oldName) return;
+    if (categories.includes(newName)) {
+      notifyError(new Error(`A category named "${newName}" already exists in this playlist.`));
+      return;
+    }
+    mutatingCategoriesRef.current = true;
     try {
       const toUpdate = channels.filter(c => c.category === oldName).map(c => c.id);
       if (toUpdate.length > 0) await api.bulkUpdateChannels(playlistId, toUpdate, { category: newName });
       const newCats = categories.map(c => c === oldName ? newName : c);
       await api.updatePlaylist(playlistId, { categories: newCats });
+      setLocalOrder(newCats);
       if (activeCategory === oldName) setActiveCategory(newName);
       triggerRefresh();
-    } catch (e) { console.error(e); }
+    } catch (e) { console.error(e); notifyError(e, 'Failed to rename category.'); }
+    finally { mutatingCategoriesRef.current = false; }
   };
 
   const confirmDeleteCategory = async () => {
@@ -200,31 +227,52 @@ export default function CategoryList({ playlistId }: { playlistId: string }) {
     const toDeleteIds = toDeleteChannels.map(c => c.id);
     const remainingCats = categories.filter(c => c !== catName);
     setShowDeleteConfirm(null);
+    mutatingCategoriesRef.current = true;
     try {
       if (toDeleteIds.length > 0) await api.bulkDeleteChannels(playlistId, toDeleteIds);
-      await api.updatePlaylist(playlistId, { categories: remainingCats.length ? remainingCats : ['General'] });
+      const savedCats = remainingCats.length ? remainingCats : ['General'];
+      await api.updatePlaylist(playlistId, { categories: savedCats });
+      setLocalOrder(savedCats);
       triggerRefresh();
       setUndoEntry({
         description: `Deleted category "${catName}" (${toDeleteChannels.length} channels)`,
         restore: async () => {
-          const restoreData = toDeleteChannels.map(({ id: _id, playlistId: _pid, createdAt: _c, updatedAt: _u, ...rest }) => rest);
-          if (restoreData.length > 0) await api.bulkAddChannels(playlistId, restoreData);
-          await api.updatePlaylist(playlistId, { categories: [...remainingCats, catName] });
-          triggerRefresh();
+          mutatingCategoriesRef.current = true;
+          try {
+            const restoreData = toDeleteChannels.map(({ id: _id, playlistId: _pid, createdAt: _c, updatedAt: _u, ...rest }) => rest);
+            if (restoreData.length > 0) await api.bulkAddChannels(playlistId, restoreData);
+            const restoredCats = [...remainingCats, catName];
+            await api.updatePlaylist(playlistId, { categories: restoredCats });
+            setLocalOrder(restoredCats);
+            triggerRefresh();
+          } catch (e) {
+            console.error(e);
+            notifyError(e, 'Failed to restore category.');
+          } finally {
+            mutatingCategoriesRef.current = false;
+          }
         },
       });
-    } catch (e) { console.error(e); }
+    } catch (e) { console.error(e); notifyError(e, 'Failed to delete category.'); }
+    finally { mutatingCategoriesRef.current = false; }
   };
 
   const handleAddCategory = async () => {
     const name = newCategoryName.trim();
     if (!name || !playlist) return;
+    if (categories.includes(name)) {
+      notifyError(new Error(`A category named "${name}" already exists in this playlist.`));
+      return;
+    }
+    mutatingCategoriesRef.current = true;
     try {
-      await api.updatePlaylist(playlistId, { categories: [...categories, name] });
+      const newCats = [...categories, name];
+      await api.updatePlaylist(playlistId, { categories: newCats });
+      setLocalOrder(newCats);
       setActiveCategory(name);
       triggerRefresh();
-    } catch (e) { console.error(e); }
-    finally { setNewCategoryName(''); setShowAddCategory(false); }
+    } catch (e) { console.error(e); notifyError(e, 'Failed to add category.'); }
+    finally { mutatingCategoriesRef.current = false; setNewCategoryName(''); setShowAddCategory(false); }
   };
 
   if (!playlist) return null;
@@ -272,8 +320,8 @@ export default function CategoryList({ playlistId }: { playlistId: string }) {
 
       {/* ── Dialog: Delete Category ────────────────────────────────────────── */}
       {showDeleteConfirm && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 px-4">
-          <div className="w-full max-w-sm bg-white dark:bg-[#272727] amoled:dark:bg-[#1a1a1a] rounded elev-24">
+        <div className="md-scrim fixed inset-0 z-50 flex items-center justify-center bg-black/50 px-4">
+          <div className="md-dialog w-full max-w-sm bg-white dark:bg-[#272727] amoled:dark:bg-[#1a1a1a] rounded elev-24">
             <h2 className="text-xl font-medium text-gray-900 dark:text-white px-6 pt-6 pb-2">
               Delete Category
             </h2>
@@ -300,8 +348,8 @@ export default function CategoryList({ playlistId }: { playlistId: string }) {
 
       {/* ── Dialog: Add Category ───────────────────────────────────────────── */}
       {showAddCategory && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 px-4">
-          <div className="w-full max-w-sm bg-white dark:bg-[#272727] amoled:dark:bg-[#1a1a1a] rounded elev-24">
+        <div className="md-scrim fixed inset-0 z-50 flex items-center justify-center bg-black/50 px-4">
+          <div className="md-dialog w-full max-w-sm bg-white dark:bg-[#272727] amoled:dark:bg-[#1a1a1a] rounded elev-24">
             <h2 className="text-xl font-medium text-gray-900 dark:text-white px-6 pt-6 pb-5">
               New Category
             </h2>
@@ -315,7 +363,9 @@ export default function CategoryList({ playlistId }: { playlistId: string }) {
                   if (e.key === 'Escape') { setShowAddCategory(false); setNewCategoryName(''); }
                 }}
                 placeholder="Category name"
-                className="w-full border border-gray-400 dark:border-gray-500 rounded px-3 py-2.5 text-sm focus:outline-none focus:border-blue-700 dark:focus:border-blue-400 bg-transparent text-gray-900 dark:text-white placeholder-gray-400"
+                className="w-full border border-gray-400 dark:border-gray-500 rounded px-3 py-2.5 text-sm focus:outline-none bg-transparent text-gray-900 dark:text-white placeholder-gray-400"
+                onFocus={e => (e.target.style.borderColor = accentColor)}
+                onBlur={e => (e.target.style.borderColor = '')}
               />
             </div>
             <div className="flex justify-end gap-1 px-4 py-4">
@@ -328,7 +378,8 @@ export default function CategoryList({ playlistId }: { playlistId: string }) {
               <button
                 onClick={handleAddCategory}
                 disabled={!newCategoryName.trim()}
-                className="md-btn h-9 px-4 rounded text-xs font-medium uppercase tracking-wider text-blue-700 dark:text-blue-400 disabled:opacity-40"
+                className="md-btn h-9 px-4 rounded text-xs font-medium uppercase tracking-wider disabled:opacity-40"
+                style={{ color: accentColor }}
               >
                 Add
               </button>
