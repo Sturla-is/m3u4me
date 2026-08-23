@@ -90,7 +90,7 @@ cd /opt/m3u4me
 ```
 ### 2. Pull the latest code from this repo
 ```
-git pull
+git pull --ff-only
 ```
 > [!NOTE]
 > During this step, you might run into the following error:
@@ -98,7 +98,7 @@ git pull
 > If so, just run `git restore package-lock.json` and then continue with the following steps.
 ### 3. Install any new dependencies
 ```
-npm install
+npm ci
 ```
 ### 4. Rebuild the app
 ```
@@ -106,7 +106,7 @@ npm run build
 ```
 ### 5. Restart the PM2 process
 ```
-pm2 restart ecosystem.config.cjs
+pm2 restart ecosystem.config.cjs --update-env
 ```
 
 ## Bug reports & feature requests
