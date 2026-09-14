@@ -1,11 +1,14 @@
 {
   "name": "m3u4me",
-  "version": "2.1.0",
+  "version": "2.2.0",
   "description": "A local M3U IPTV playlist manager and server",
   "author": "Open Source Contributor",
   "license": "GPL-3.0",
   "private": true,
   "type": "module",
+  "engines": {
+    "node": "^22.18.0 || >=23.6.0"
+  },
   "scripts": {
     "start": "node server.ts",
     "dev": "tsx server.ts",

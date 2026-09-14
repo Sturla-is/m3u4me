@@ -4,68 +4,205 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-m3u4me — a self-hosted, single-user, local-network IPTV M3U playlist manager. Playlists/channels never leave the box it runs on. Express backend + Vite-built React 19 frontend, persisted to a single JSON file on disk. Per the README, the codebase is AI-generated with the maintainer (a non-developer) reviewing/steering — keep changes readable and avoid introducing patterns that need heavy explanation. There is no test suite in this repo.
+m3u4me is a self-hosted, single-user IPTV M3U playlist manager for a local network. Playlists never leave the machine it runs on. It has an Express backend (`server.ts`) and a Vite-built React 19 frontend (`src/`), and it stores everything in one JSON file on disk.
+
+The maintainer is a graphic designer, not a developer. The code is AI-generated, and the maintainer reviews and steers it. Keep changes readable and self-explanatory. The codebase leans on "why" comments above non-obvious code, so match that density. Don't introduce abstractions or libraries that need heavy explanation. `README.md` is end-user documentation for non-developers. When a user-visible feature or install step changes, update its Features/Installation/Updating sections too.
 
 ## Commands
 
-- `npm run dev` — `tsx server.ts`; runs Express with Vite in middleware mode (HMR dev server), on port 8080 (override with `PORT` env var).
-- `npm run build` — `vite build` → `dist/`.
-- `npm run start` — `node server.ts` in production mode; requires `dist/` to already exist (run `build` first). Serves `dist/` statically with SPA fallback.
-- `npm run preview` — `vite preview`.
-- `npm run lint` — `eslint . && tsc --noEmit`. This is also the typecheck command; there's no separate `typecheck` script.
-- `npm run clean` — `rm -rf dist`.
-- No test runner is configured.
-- Production process management is PM2 via `ecosystem.config.cjs` (`pm2 start ecosystem.config.cjs`).
+- `npm run dev` runs `tsx server.ts`: Express plus Vite in middleware mode (HMR) on port 8080 (`PORT` env overrides). `.claude/launch.json` (local-only, gitignored) defines this as `m3u4me-dev` for the Browser pane.
+- `npm run build` runs `vite build` and outputs to `dist/`.
+- `npm run start` runs `node server.ts` in production mode. It needs `dist/` to exist, and it runs `server.ts` through Node's built-in TypeScript type stripping. That's only on by default from Node 22.18 (23.6 on the 23.x line), hence `engines` and the version check in `install.sh`. Earlier 22.x versions fail with `ERR_UNKNOWN_FILE_EXTENSION`.
+- `npm run lint` runs `eslint . && tsc --noEmit`. `eslint.config.js` has no rules and only an ignore entry, so in practice this is the typecheck. There is no separate typecheck script.
+- There is no test suite or test runner. Verify changes with `npm run lint` plus live checks in the running app.
 
-## Architecture
+## Backend: `server.ts`
 
-### One backend file, one JSON database
+All backend code lives in `server.ts`: no router modules, no ORM, no shared code with `src/`. Top-to-bottom layout:
 
-- `server.ts` is the entire backend — a single Express app with every route registered inline inside `startServer()`. No router modules, no ORM.
-- Persistence is a single JSON file, `data/db.json` (gitignored, auto-created on boot with empty arrays). `readDb()`/`writeDb()` synchronously read/rewrite the *whole file* on every mutation — there are no transactions and no migration framework (one-off migrations like `migrateShortIds()` just run unconditionally at boot). This is adequate only because the app is single-user/local; don't add code that assumes concurrent writers.
-- Auth secrets live in a separate gitignored file, `data/auth.json`.
-- In dev (`NODE_ENV !== 'production'`), `server.ts` creates a Vite server in middleware mode and mounts it; in production it serves `dist/` statically with an `index.html` catch-all for client-side routing.
+1. Type declarations, then `readDb()`/`writeDb()`.
+2. EPG fetch/parse, then channel-pool fetch/parse/diff.
+3. Auth helpers, then the boot migration `migrateShortIds()`.
+4. M3U/XML escaping helpers and `serveM3U()`.
+5. `startServer()`, in this order:
+   - boot refresh and the 5-minute interval
+   - `/api` auth middleware
+   - all routes
+   - public short-URL routes
+   - finally the Vite middleware (dev) or `dist/` static + `index.html` SPA catch-all (prod)
 
-### Data model — duplicated by hand across backend and frontend
+**New non-API routes must be registered before that final block**, or the catch-all swallows them.
 
-`server.ts` and `src/apiClient.ts` each declare their own copies of `Playlist`, `Channel`, `EpgSource`, `ChannelPoolSource`, etc. There's no shared types package — when changing a shape, update both files.
+**Runtime constraints (production runs plain `node server.ts`):**
+- Use only *erasable* TypeScript syntax: no `enum`, `namespace`, constructor parameter properties, or `import x = require()`. `tsx` in dev accepts these, so a violation only breaks in production.
+- `vite` is imported at the top of the file, so it's a runtime dependency even in production. That's why the Dockerfile and install script use `npm ci`, not `--omit=dev`.
+- `data/` and `dist/` resolve relative to `process.cwd()`. The systemd unit makes everything except `data/` read-only, so never write files anywhere else.
 
-- **`Playlist`** — has a `shortId` (small incrementing integer used in the public `/[shortId]` and `/[shortId]/epg` URLs) and an `exportId` (UUID, legacy long-form export route kept for backwards compatibility).
-- **`Channel`** — belongs to one playlist + one category string; `order` drives manual drag-reordering.
-- **`EpgSource`** — an XMLTV URL (optionally gzip) or Xtream Codes credentials. Parsed programme/channel data is cached **in memory only** (`epgCache` Map keyed by source id) — it is never written to `db.json`, so it's rebuilt from scratch on every server restart via `refreshEpgSource()`, which runs for every stored source at boot and again on a 5-minute interval check against each source's `refreshIntervalHours`.
-- **`ChannelPoolSource` / `ChannelPoolEntry` / `ChannelPoolChangeLog`** — a separate "bulk source" concept, distinct from playlists: an Xtream account, a playlist URL, or an uploaded file that you browse and cherry-pick channels from into an actual playlist. Entries *are* persisted to `db.json` (mirrored into an in-memory `channelPoolCache` for the running session). Each refresh diffs old vs. new entries by stream URL and appends an added/removed/renamed changelog entry, pruned to entries newer than 90 days.
+**Persistence:**
+- `data/db.json` (gitignored, auto-created) holds everything. `readDb()`/`writeDb()` synchronously read or rewrite the *whole file* on each request. There are no transactions and no concurrent-writer safety, which is acceptable only because the app is single-user.
+- `readDb()` backfills missing top-level arrays. When adding a field to an existing record type, make it optional or nullable and tolerate its absence on old records (see `lastDownloadedAt`). Only use a boot migration like `migrateShortIds()` when a value must be backfilled.
+- The dev server uses the real `data/db.json`, so any testing in the browser mutates real data.
+- Validation is minimal. Most `POST`/`PUT` handlers spread `req.body` straight into the stored record, and the frontend is trusted to send correct shapes.
 
-### Auth is bespoke — and unrelated to `AuthContext`
+**Background refresh (EPG sources and channel-pool sources):**
+- At boot, every EPG source and every non-file pool source is refreshed. The refresh is fire-and-forget, so it doesn't block `listen`.
+- A 5-minute `setInterval` refreshes any source that has never been fetched, whose last attempt errored (`lastFetchError`), or whose `refreshIntervalHours` has elapsed. Defaults are 12h for EPG and 24h for pool. Failed sources are therefore retried every tick.
+- Refreshes run **sequentially** (`refresh*SourcesSequentially`), not in parallel. This is deliberate: parallel large fetches made healthy sources fail at boot.
+- EPG data is cached **in memory only** (`epgCache`), never persisted. After a restart it's empty until each source re-fetches. `channelCount` in `db.json` is the fallback used by `/api/stats`.
+- Channel-pool entries **are** persisted (`channelPoolEntries`) and mirrored in `channelPoolCache`. Each refresh diffs old vs new entries by URL + occurrence index and appends an added/removed/renamed changelog entry. Changelog entries older than 90 days are pruned.
+- Xtream panels return HTTP 200 with an error object for bad logins. `fetchXtreamChannels` treats a non-array response as a failure, so a login hiccup doesn't wipe the cached entries.
+- The EPG parser folds `<sub-title>` into `desc` as `"sub-title / desc"`. No separate `subTitle` field exists.
 
-- Real auth: PBKDF2-hashed password + a one-time-shown recovery key, both in `data/auth.json`. Login issues a random token held only in an in-memory `Set` (`activeSessions`) — sessions do not survive a server restart. The middleware mounted at `app.use('/api', ...)` gates every `/api/*` route except `publicPaths` (`/auth/status`, `/auth/login`, `/auth/recover`). If no password has ever been set, auth is a complete no-op.
-- The frontend stores the token in `sessionStorage` (`src/apiClient.ts`: `getSessionToken`/`setSessionToken`) and routes every call through `authFetch()`, which attaches `Authorization: Bearer …` and fires a global `auth-expired` window event on a 401 (handled in `App.tsx` to re-lock the UI via `LockScreen`).
-- `src/contexts/AuthContext.tsx` (`useAuth()`) is a **vestigial, unrelated stub** — it always returns a hardcoded dummy local user and has no connection to the password system above. Don't conflate the two when touching auth.
-- The short playlist/EPG URLs (`GET /:shortId`, `GET /:shortId/epg`) are registered outside the `/api` prefix and are therefore never auth-gated — intentional, since IPTV players/EPG grabbers hitting these can't supply a bearer token.
+**Parsing and output:**
+- M3U/XSPF parsing is server-side only (`parseM3uToChannelPoolEntries`, `parseXspfToChannelPoolEntries`). It is shared by pool sources and by `POST /api/playlists/import`, which calls the parsers with `sourceId: 'import'` and converts entries into channels.
+- `detectPlaylistWarning()` distinguishes real playlists from HLS single-stream links. Both the Sources "validate URL" flow and the playlist import flow use it. Its result follows a **warning → confirm** pattern: the server returns `{ warning }`, the dialog shows it, and a second submit sends `confirmWarning: true` (import) or skips validation (pool source).
+- M3U output (`serveM3U`) sorts channels by category order, then `order`. It skips `isHidden` channels and escapes attribute quotes and newlines. XMLTV output escapes attributes and wraps text in CDATA.
+- `serveM3U` also writes `lastDownloadedAt` to the DB, so a GET that serves a playlist is also a DB write.
 
-### Frontend data flow: no query library — hand-rolled fetch + event bus
+**Pass provider data through faithfully.** Don't add filtering or special cases for junk in upstream EPG/playlist feeds (placeholder descriptions, odd names, and so on) unless the maintainer asks.
 
-- `src/apiClient.ts` exports one `api` object holding every REST call, plus fetch-on-mount hooks (`usePlaylists`, `useChannels`, `useEpgSources`, `useChannelPoolSources`).
-- There's no cache/invalidation library. After a mutation, call the matching `trigger*Refresh()` (`triggerRefresh` / `triggerEpgRefresh` / `triggerChannelPoolRefresh`), which dispatches a `refresh` event on a plain `EventTarget` (`dbEvents` / `epgEvents` / `channelPoolEvents`); every hook subscribed to that bus refetches. Forgetting to call the right trigger after adding a new mutation leaves the UI silently stale.
-- Cross-cutting UI/app state (active playlist/category, sidebar width, theme, accent color, hide-URLs, etc.) lives in one Zustand store, `src/store.ts`. Only cosmetic fields are persisted to localStorage via `partialize` (`logoBgColor`, `accentColor`, `isDarkMode`, `isAmoledMode`, `is24Hour`) — navigation/selection state resets on reload.
+### Routes
 
-### Three feature surfaces, one `Dashboard.tsx` shell
+Public routes (outside `/api`, never auth-gated, because IPTV players can't send a bearer token):
+- `GET /:shortId` returns the playlist as `#EXTM3U` text. `GET /:shortId/epg` returns an XMLTV document filtered to that playlist's visible channels' `tvgId`s.
+- `GET /api/playlists/:exportId.m3u` is the legacy long export URL, kept for old links. It sits under `/api`, so it *is* gated when a password is set.
 
-`Dashboard.tsx` renders a sidebar (playlist/source/EPG list depending on tab) + a main viewer, switched by `activeView` in the store:
+`/api` groups:
 
-1. **My Playlists** — `PlaylistEditor.tsx` + `CategoryList.tsx`. Drag-reorder (dnd-kit) for both channels and categories, inline click-to-edit fields, multi-select bulk move/delete/find-replace, a stream health checker (HEAD, falling back to GET, per channel), TVG-ID autocomplete against the EPG pool, and client-side pagination (100 channels/page) per category.
-2. **Sources** — `ChannelPoolViewer.tsx` + `ChannelPoolUpdateLog.tsx` (collapsible right-hand drawer) + `AddChannelPoolSourceDialog.tsx`. Browse/search a channel-pool source and bulk-add selected channels into a real playlist (with optional category override).
-3. **EPG** — `EpgViewer.tsx` (a manually-windowed/virtualized timeline grid, not a library) rendering `/api/epg-sources/:id/now`, plus `EpgProgramDialog.tsx` and `AddEpgSourceDialog.tsx`. `BulkEpgAssignDialog.tsx` fuzzy-matches (trigram + word-overlap scoring, computed client-side) playlist channel names against EPG channel names and bulk-assigns `tvgId` in chunks (with cancel/revert support). `AssignTvgIdDialog.tsx` is the reverse flow: pick one EPG channel, then assign it to channels chosen from across any playlist.
+| Area | Routes |
+| --- | --- |
+| Auth | `/auth/status`, `/auth/login` and `/auth/recover` (these three are public), plus `/auth/set-password`, `/auth/remove-password`, `/auth/logout` |
+| Playlists | `/playlists` CRUD and `/playlists/import` |
+| Channels (under `/playlists/:id/channels`) | single PUT/DELETE, `bulk` (add, returns new ids), `bulk-update` (same changes → many ids), `bulk-update-many` (per-id changes), `bulk-replace` (find/replace), `bulk-delete`, `reorder` |
+| EPG | `/epg-sources` CRUD, `/:id/refresh`, `/:id/channels`, `/:id/now` (programmes from −3h to +6h), `/epg/tvg-ids?q=` (autocomplete), `/epg/resolve-tvg-ids` |
+| Channel pool | `/channel-pool/sources` CRUD, `/upload`, `/:id/refresh`, `/:id/channels?q=&category=&sort=name\|original`, `/:id/categories`, `/validate-url`, `/changelog?page=` |
+| Other | `/search?q=` (all three surfaces, capped at 50 per kind), `/stats` (homescreen), `/health-check` (HEAD, then GET fallback, 8s timeout), `/version` (reads `package.json`) |
 
-M3U/XSPF parsing for channel-pool sources happens entirely server-side (`parseM3uToChannelPoolEntries` / `parseXspfToChannelPoolEntries` in `server.ts`) — there is no client-side parser; an earlier `src/utils/m3uParser.ts` that duplicated this logic client-side was removed once nothing imported it.
+`/api/proxy`, `/api/epg-sources/:id/programs/:channelId` (`api.getEpgPrograms`) and `api.logout` exist, but nothing in the frontend currently calls them.
 
-### Styling conventions
+### Auth (bespoke)
 
-- Tailwind v4 (CSS-first config via `@tailwindcss/vite`, no `tailwind.config.js`). Two custom variants are defined in `src/index.css`: `dark` (class-based, toggled on `<html>`) and `amoled` (stacks with `dark`, e.g. `amoled:dark:bg-black`, for true-black surfaces).
-- `.md-btn` and `.elev-{1,2,4,8,16,24}` in `index.css` are hand-rolled Material Design 2 ripple/elevation utilities used throughout instead of a component library.
-- Accent color is a user setting (`useStore().accentColor`) applied via inline `style={{ color/backgroundColor: accentColor }}` rather than Tailwind classes, since it's arbitrary/user-picked. `contrastText()` and `accentAlpha()` in `store.ts` compute readable foreground text and tinted backgrounds against it.
+- `data/auth.json` (gitignored) holds a PBKDF2 hash of the password and of a one-time-shown recovery key. If that file doesn't exist, auth is a complete no-op.
+- Login issues a random token kept in an in-memory `Set` (`activeSessions`), so **every server restart logs everyone out**.
+- The frontend keeps the token in `sessionStorage` and sends it via `authFetch()`. A 401 fires a window `auth-expired` event, and `App.tsx` responds by showing `LockScreen`.
+- `src/contexts/AuthContext.tsx` is a **vestigial stub** unrelated to this. `AuthProvider` still wraps `<App>`, but nothing calls `useAuth()`. Ignore it when working on auth.
 
-### Non-`/api` routes served directly by `server.ts`
+## Data model: duplicated by hand
 
-- `GET /:shortId` — the playlist as `#EXTM3U` text (`serveM3U()`).
-- `GET /:shortId/epg` — an XMLTV `<tv>` document built from the in-memory EPG cache, filtered to that playlist's channels' `tvgId`s.
-- `GET /api/playlists/:exportId.m3u` — legacy long-form export URL, kept only for backwards compatibility with links generated before `shortId` existed.
+`server.ts` and `src/apiClient.ts` each declare `Playlist`, `Channel`, `EpgSource`, `ChannelPoolSource`, `ChannelPoolEntry`, `ChannelPoolChangeLog`, and the EPG programme shape. **When changing a shape, update both files.** Response-only types (`SearchResult`, `Stats`, `EpgChannel`) exist only in `apiClient.ts` and must match what the route actually returns.
+
+- **Playlist**
+  - `shortId`: incrementing integer used in the public URLs.
+  - `exportId`: UUID for the legacy URL.
+  - `categories: string[]`: this array *is* the category display order. `PUT` rejects duplicate names, and bulk add/update endpoints auto-append unknown categories.
+  - `lastDownloadedAt`: last time a player pulled the M3U; absent on old records.
+- **Channel**: belongs to one playlist and one category string. `order` drives drag-reordering within the playlist. `isHidden` channels are excluded from M3U and EPG output.
+- **EpgSource / ChannelPoolSource**: `type` is `'xml' | 'xtream'` for EPG and `'xtream' | 'playlist-url' | 'playlist-file'` for pool sources. File sources never refresh. Both carry `lastFetched`, `lastFetchError` and `channelCount`, which the sidebars display.
+
+## Frontend
+
+**Entry and routing:** `main.tsx` wraps everything in `BrowserRouter` and calls `initRipples()`. `App.tsx` applies the `dark`/`amoled` classes to `<html>`, updates the accent-tinted favicon, checks auth status, shows `LockScreen` when locked, and otherwise renders routes:
+
+| Path | Component |
+| --- | --- |
+| `/` | `Home.tsx`: homescreen with stats tiles, last download, newest pool channels, per-playlist copy/download links |
+| `/playlists`, `/sources`, `/epg` | `Dashboard.tsx` with `activeView` prop `'playlists' \| 'channels' \| 'epg'` (note: **`'channels'` means the Sources tab**) |
+| `/settings` | `SettingsPage.tsx`: appearance, password/recovery key, about + version |
+| `*` | redirect to `/` |
+
+**Data fetching (no query library):**
+- `src/apiClient.ts` exports one `api` object with every REST call, plus fetch-on-mount hooks: `usePlaylists`, `useChannels`, `useEpgSources`, `useChannelPoolSources`, `useStats`.
+- There's no cache or invalidation. After any mutation, call the matching `triggerRefresh()` / `triggerEpgRefresh()` / `triggerChannelPoolRefresh()`. Each one dispatches `refresh` on a plain `EventTarget`, and subscribed hooks refetch. Forgetting the trigger leaves the UI silently stale. `useStats` listens to all three buses. The source hooks also listen to `dbEvents`.
+- `authFetch` throws on any non-2xx response, using the server's `{ error }` message. The exception is `/api/auth/*` calls, whose callers inspect `ok`/`status` to show inline form errors.
+- `useChannels` returns a stable `EMPTY_CHANNELS` array while a fetch is in flight. Returning a fresh `[]` there once caused an infinite render loop, so keep hook return values referentially stable.
+
+**UI state: one Zustand store (`src/store.ts`):**
+- It holds active playlist/category/EPG source/pool source, `scrollTarget`, `isSidebarOpen`, `channelPoolLogOpen`, `hideUrls`, `undoEntry`, `toast`, and the cosmetic settings.
+- Only `logoBgColor`, `accentColor`, `isDarkMode`, `isAmoledMode` and `is24Hour` are persisted to localStorage. Everything else resets on reload.
+- The sidebar *width* is local state in `Dashboard.tsx`, not in the store.
+- **Errors and notifications:** in a mutation's catch block, call `console.error(e)` plus `notifyError(e, 'fallback message')`. For non-error feedback, use `notifyWarning` or `notifyInfo`. `AuthExpiredError` is ignored on purpose (the lock screen covers it). One toast shows at a time.
+- **Undo:** `setUndoEntry({ description, restore })`. Existing restores re-create data via `bulkAddChannels`, so restored channels get new ids.
+- `<Toast />` renders both the toast and the undo snackbar (Cmd/Ctrl+Z triggers undo). It's mounted in `Dashboard`, `Home` and `SettingsPage`, but not in LockScreen. Error messages users see (toasts, inline form errors, server `{ error }` text) should be plain language that says what to do next.
+
+**Cross-surface search:**
+- `Spotlight.tsx` (Cmd/Ctrl+K) queries `/api/search` and groups results as kind → container → category.
+- Picking a result navigates, sets the active container, and sets `scrollTarget: { kind, id }`. The matching view (`PlaylistEditor` / `ChannelPoolViewer` / `EpgViewer`) clears any filter or pagination hiding the target, scrolls to it, highlights it, and resets `scrollTarget` to null.
+- `handleSpotlightNavigate` and the keyboard-shortcuts dialog are **duplicated verbatim in `Dashboard.tsx` and `Home.tsx`**, so edit both. The top nav bar is also deliberately mirrored between the two files so nothing shifts when navigating.
+
+**Version check:** `AppInfo.tsx`'s `useVersionInfo()` compares `/api/version` (the `package.json` version) to GitHub's latest release, fetched from the browser. It drives the update banner in Dashboard/Home and the About section.
+
+### Feature surfaces
+
+- **My Playlists**
+  - The sidebar has the playlist list plus `CategoryList.tsx`: dnd-kit category reordering and rename/delete/add. Category mutations write the full `categories` array and suppress the auto-sync effect while in flight, to avoid a race.
+  - `PlaylistEditor.tsx` covers:
+    - dnd-kit channel reordering with an optimistic local order
+    - click-to-edit fields
+    - multi-select with bulk move/delete/hide and find/replace
+    - the stream health checker (batched to `/api/health-check`)
+    - TVG-ID autocomplete
+    - client-side pagination of 100 channels per page
+    - keyboard shortcuts: Cmd/Ctrl+A, Del, Space, Esc
+  - `NewPlaylistDialog.tsx` creates an empty playlist or imports from a URL/file.
+  - `BulkEpgAssignDialog.tsx` is opened from PlaylistEditor. It fuzzy-matches channel names to EPG channel names client-side (trigram + word overlap, precomputed index, chunked with yields) and applies matches in chunks via `bulk-update-many`, with cancel & revert.
+- **Sources**
+  - `ChannelPoolViewer.tsx` is a virtualized list (56px rows). Search, category filter and sort run server-side. The selection persists across searches, and an `AddToPlaylistModal` bulk-adds the selection with an optional category override.
+  - `ChannelPoolUpdateLog.tsx` is a collapsible changelog drawer.
+  - `AddChannelPoolSourceDialog.tsx` adds or edits sources (Xtream, URL, or file upload).
+- **EPG**
+  - `EpgViewer.tsx` is a hand-virtualized timeline grid. It uses a single scroll container with sticky header and channel column, rAF-coalesced scroll handling, and programme times parsed once per fetch.
+  - `EpgProgramDialog.tsx` shows programme details.
+  - `AddEpgSourceDialog.tsx` adds or edits sources.
+  - `AssignTvgIdDialog.tsx` is the reverse of bulk assign: pick one EPG channel, then assign it to channels from any playlist. It's opened from Dashboard via EpgViewer's `onAssignChannel`.
+
+### Shared pieces and conventions
+
+- `Dialog.tsx` is the shared modal shell (scrim, Escape/backdrop close, `dismissible` flag). Use it for new dialogs. The confirm dialogs inline in Dashboard/Home predate it.
+- `ChannelLogo.tsx` renders a logo with an initials fallback. `Logo.tsx` exports `M3U_ICON_PATH`, which `utils/favicon.ts` reuses.
+- Utilities in `src/utils/`:
+  - `formatTime` (always honor `is24Hour`)
+  - `useDebouncedValue` (search-as-you-type)
+  - `ripple.ts` (document-level ripple for every `.md-btn`)
+- **Programmatic "jump to row" scrolling uses `behavior: 'instant'`**, not `'smooth'`. Smooth scrolling was observed not to animate reliably, and the virtualized lists need `scrollTop` to actually change before the target row renders.
+- **Clipboard copy needs a fallback.** The app is usually opened over plain `http://<LAN-IP>`, which is not a secure context, so `navigator.clipboard` is undefined there. Follow the `execCommand('copy')` fallback pattern in `PlaylistEditor.tsx`/`Home.tsx`.
+- XMLTV timestamp parsing exists twice: `parseXmltvDate` inside the `/now` route in `server.ts` and `parseXmltvTime` in `EpgProgramDialog.tsx`.
+- Use relative imports. The `@/*` path alias is configured in `tsconfig.json`/`vite.config.ts`, but nothing uses it.
+
+### Styling
+
+- Tailwind v4, configured CSS-first in `src/index.css` (no `tailwind.config.js`). It defines custom variants:
+  - `dark` (class on `<html>`)
+  - `amoled` (stacks with dark: `amoled:dark:bg-black`)
+  - `no-hover` (touch devices; used so hover-revealed controls stay reachable)
+- Surface palette used throughout:
+  - page: `bg-gray-100 dark:bg-[#121212] amoled:dark:bg-black`
+  - bars/cards: `bg-white dark:bg-[#1e1e1e] amoled:dark:bg-[#0a0a0a]`
+  - dialogs: `bg-white dark:bg-[#272727] amoled:dark:bg-[#1a1a1a]`
+- Hand-rolled Material Design 2 replaces a component library:
+  - `.md-btn` for hover/press state and ripple; put it on clickable surfaces
+  - `.elev-{1,2,4,8,16,24}` shadows
+  - `--md-standard/decelerate/accelerate` easing tokens
+  - entrance classes: `.md-scrim`, `.md-dialog`, `.md-dialog-top`, `.md-menu`, `.md-list-in`, `.md-snackbar-in`, `.md-page-in`
+  - `.home-*` classes are Home-only
+- Add any new animation class to the `prefers-reduced-motion` block too.
+- The `.elev-*`/`.md-btn` transitions sit in `@layer components` so Tailwind `transition-*` utilities override them. Keep new default transitions in that layer.
+- The accent color is user-picked, so apply it with inline `style={{ color/backgroundColor: accentColor }}`, not Tailwind classes. Use `contrastText()` for readable text on it and `accentAlpha(hex, '18')` for tints.
+
+## Deployment and releases
+
+Four supported install paths, all documented in the README:
+1. **`install.sh`** (curl-piped from `main` on GitHub). For systemd Linux with apt/dnf: installs Node 22.18+ (from NodeSource), puts the app in `/opt/m3u4me` owned by an `m3u4me` system user, keeps the port in `/etc/m3u4me.env`, and installs a hardened systemd unit (`ProtectSystem=strict`, only `data/` writable). The whole body sits in `main()`, called on the last line, so a truncated `curl | bash` download can't run half a script.
+2. **`scripts/m3u4me`**, installed to `/usr/local/bin` by `install.sh`. Only for `install.sh` installs: systemd only, no PM2. Provides `update`, `status`, `logs`, `start`/`stop`/`restart`, `version`, and `uninstall [--purge]`.
+   - `update` checks the service is actually answering on `/api/auth/status` after restarting. If any step fails (checkout, `npm ci`, build, or start), it checks out the previous release, reinstalls and rebuilds it, and restarts it if the new one had already been started.
+   - Both scripts run `git` and `npm` as the `m3u4me` user via `run_as_app`. That way git never refuses the repo for "dubious ownership", and root's git config is never touched.
+3. **Docker**: `Dockerfile` (node:22-alpine, healthcheck on `/api/auth/status`) plus `docker-compose.yml` (`./data` volume).
+4. **Manual PM2**: `ecosystem.config.cjs`.
+
+**`install.sh` and `m3u4me update` deploy the newest `v*` git tag, not `main`.** Code changes reach script-installed users only once a release is tagged. `install.sh` itself is fetched from `main` directly, but installs the `scripts/m3u4me` found in the checked-out tag, and only warns if the tag predates it. So push changes to either script together with a release tag. Shell scripts stay heavily commented because users are told to read them before piping into `sudo bash`.
+
+Release convention, from git history:
+- Bump `version` in `package.json` and `package-lock.json`.
+- Make one commit titled `Release vX.Y.Z: <summary>` with a user-facing changelog body.
+- Tag `vX.Y.Z` and publish a GitHub release. The in-app update banner compares against the GitHub release.
+
+Only commit, tag, push or release when explicitly asked.

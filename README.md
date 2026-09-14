@@ -42,53 +42,115 @@ m3u4me is your IPTV playlists' new home. Your streams don't leave your local net
 
 ## Installation
 > [!NOTE]
-> m3u4me has been tested on macOS (Apple Silicon) and Debian, running via PM2 with as little as 512MB of RAM.
-### 1. Install Node.js
-The official website is pretty straightforward about this: https://nodejs.org/en/download.<br/>After installing, make sure it was installed correctly by running `node -v` and/or `npm -v` in your terminal.
-### 2. Install PM2
+> m3u4me has been tested on macOS (Apple Silicon) and Debian, running with as little as 512MB of RAM.
+
+There are three ways to install m3u4me. The first one is by far the easiest.
+
+### Option 1: One-line install (recommended)
+For Linux servers running systemd that install software with `apt` or `dnf`: Debian, Ubuntu, Fedora, and Proxmox containers based on them.
+```
+curl -fsSL https://raw.githubusercontent.com/andrei-savin/m3u4me/main/install.sh | sudo bash
+```
+This command installs Node.js if it is missing, downloads the latest release, builds the app, and sets it up to start automatically whenever your server boots. When it is done, it prints the address where you can open m3u4me.
+
+To use a port other than 8080:
+```
+curl -fsSL https://raw.githubusercontent.com/andrei-savin/m3u4me/main/install.sh | sudo PORT=9090 bash
+```
+(Obviously, replace 9090 with your desired port.)
+
+This only works on the first install. To change the port later, edit `/etc/m3u4me.env` and run `sudo m3u4me restart`.
+
+> [!NOTE]
+> Piping a script into `sudo bash` means trusting it. [install.sh](install.sh) is deliberately commented so you can read the whole thing first. Here is everything it changes on your system:
+> - Installs git and curl if they are missing.
+> - Installs Node.js if it is missing or too old. It comes from [NodeSource](https://github.com/nodesource/distributions), whose package repository is added to your system so Node.js keeps getting updates.
+> - Puts m3u4me in `/opt/m3u4me` and runs it as a locked-down `m3u4me` user, through one systemd service.
+> - Saves the port in `/etc/m3u4me.env` and adds the `m3u4me` command to `/usr/local/bin`.
+
+Once it is installed, you get an `m3u4me` command:
+
+| Command | What it does |
+| --- | --- |
+| `sudo m3u4me update` | Update to the newest release and restart |
+| `m3u4me status` | Check whether m3u4me is running |
+| `sudo m3u4me logs` | Watch the live log (Ctrl+C to stop) |
+| `sudo m3u4me restart` | Restart m3u4me |
+| `sudo m3u4me uninstall` | Remove m3u4me — your playlists are kept |
+
+Your playlists live in `/opt/m3u4me/data`, and the port setting lives in `/etc/m3u4me.env`.
+
+### Option 2: Docker
+```
+git clone https://github.com/andrei-savin/m3u4me.git
+cd m3u4me
+docker compose up -d
+```
+m3u4me will be running at http://localhost:8080. Your playlists are stored in the `data` folder next to `docker-compose.yml`. To use a different port, change it in `docker-compose.yml` and run the last command again.
+
+### Option 3: Manual, with PM2
+The original way to run m3u4me. Use this if you would rather set everything up yourself.
+
+<b>1. Install Node.js</b><br/>
+m3u4me needs <b>Node.js 22.18 or newer</b>. The official website is pretty straightforward about installing it: https://nodejs.org/en/download.<br/>After installing, make sure it worked by running `node -v` in your terminal — it should print v22.18.0 or higher.
+
+<b>2. Install PM2</b><br/>
 This keeps your app running 24/7 in the background.
 ```
 npm install -g pm2
 ```
-### 3. Run the app
-<b>3a. Clone the source via git:</b>
+<b>3. Clone the source via git:</b>
 ```
 git clone https://github.com/andrei-savin/m3u4me.git
 ```
-<b>3b. Navigate into the folder:</b>
+<b>4. Navigate into the folder:</b>
 ```
 cd m3u4me
 ```
-<b>3c. Install the dependencies:</b>
+<b>5. Install the dependencies:</b>
 ```
-npm install
+npm ci
 ```
 m3u4me runs on port 8080 by default. You can change that in `ecosystem.config.cjs`.
 
-<b>3d. Build the app:</b>
+<b>6. Build the app:</b>
 ```
 npm run build
 ```
-<b>3e. Start up PM2:</b>
+<b>7. Start up PM2:</b>
 ```
 pm2 start ecosystem.config.cjs
 ```
 All done! You can now use m3u4me at http://localhost:8080 [replace `localhost` with the IP of your server, and `8080` with whatever custom port you set up earlier].
 
-### 4. Make m3u4me auto-run at startup (Optional):
+<b>8. Make m3u4me auto-run at startup (optional):</b>
 ```
 pm2 startup
 pm2 save
 ```
 
 ## Updating
-### 1. Navigate into the app's folder
+
+### If you used the one-line install
+```
+sudo m3u4me update
+```
+That is the entire update. It fetches the newest release, rebuilds the app, restarts it and checks that it is running. If the new version fails to build or does not start, it automatically puts the previous version back.
+
+### If you use Docker
+```
+git pull --ff-only
+docker compose up -d --build
+```
+
+### If you installed manually with PM2
+<b>1. Navigate into the app's folder</b>
 > [!NOTE]
 > The folder shown in the command below is only an example.
 ```
 cd /opt/m3u4me
 ```
-### 2. Pull the latest code from this repo
+<b>2. Pull the latest code from this repo</b>
 ```
 git pull --ff-only
 ```
@@ -96,15 +158,16 @@ git pull --ff-only
 > During this step, you might run into the following error:
 > `Your local changes to the following files would be overwritten by merge. / package-lock.json / Please commit your changes or stash them before you merge.`
 > If so, just run `git restore package-lock.json` and then continue with the following steps.
-### 3. Install any new dependencies
+
+<b>3. Install any new dependencies</b>
 ```
 npm ci
 ```
-### 4. Rebuild the app
+<b>4. Rebuild the app</b>
 ```
 npm run build
 ```
-### 5. Restart the PM2 process
+<b>5. Restart the PM2 process</b>
 ```
 pm2 restart ecosystem.config.cjs --update-env
 ```

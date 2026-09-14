@@ -21,6 +21,7 @@ export default function LockScreen({ onUnlock }: LockScreenProps) {
   const [newPassword, setNewPassword] = useState('');
   const [newRecoveryKey, setNewRecoveryKey] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
+  const [copyFailed, setCopyFailed] = useState(false);
 
   const handleLogin = async () => {
     if (!password.trim()) return;
@@ -34,8 +35,11 @@ export default function LockScreen({ onUnlock }: LockScreenProps) {
       } else {
         setError(res.error || 'Incorrect password');
       }
-    } catch {
-      setError('Connection error');
+    } catch (e) {
+      // api.login/api.recover return wrong-password errors as res.error above, so landing here
+      // means the server couldn't be reached at all.
+      console.error(e);
+      setError("Couldn't reach m3u4me. Check that it's still running, then try again.");
     } finally {
       setLoading(false);
     }
@@ -53,18 +57,41 @@ export default function LockScreen({ onUnlock }: LockScreenProps) {
       } else {
         setError(res.error || 'Invalid recovery key');
       }
-    } catch {
-      setError('Connection error');
+    } catch (e) {
+      // api.login/api.recover return wrong-password errors as res.error above, so landing here
+      // means the server couldn't be reached at all.
+      console.error(e);
+      setError("Couldn't reach m3u4me. Check that it's still running, then try again.");
     } finally {
       setLoading(false);
     }
   };
 
-  const handleCopyKey = async () => {
+  // Same copy-with-fallback as SettingsPage's handleCopyKey, kept in sync by hand. The app is
+  // usually opened over plain http://<LAN-IP>, which isn't a secure context, so navigator.clipboard
+  // doesn't exist there and the hidden-textarea execCommand path does the work.
+  const handleCopyKey = () => {
     if (!newRecoveryKey) return;
-    await navigator.clipboard.writeText(newRecoveryKey);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
+    const key = newRecoveryKey;
+    const flash = () => { setCopyFailed(false); setCopied(true); setTimeout(() => setCopied(false), 2000); };
+    // Shown inline rather than as a toast, because <Toast /> isn't mounted on the lock screen.
+    const showCopyFailed = () => setCopyFailed(true);
+    if (navigator.clipboard && window.isSecureContext) {
+      navigator.clipboard.writeText(key).then(flash).catch(fallback);
+    } else {
+      fallback();
+    }
+    function fallback() {
+      const el = document.createElement('textarea');
+      el.value = key;
+      el.style.cssText = 'position:fixed;opacity:0;top:0;left:0;';
+      document.body.appendChild(el);
+      el.select();
+      // execCommand returns false (rather than throwing) when the copy is refused. Only show the
+      // checkmark on a real copy, since a false "copied" here could cost someone their recovery key.
+      try { if (document.execCommand('copy')) flash(); else showCopyFailed(); } catch (e) { console.error(e); showCopyFailed(); }
+      document.body.removeChild(el);
+    }
   };
 
   // After recovery: show new recovery key
@@ -92,6 +119,11 @@ export default function LockScreen({ onUnlock }: LockScreenProps) {
                 {copied ? <Check className="h-4 w-4 text-green-500" /> : <Copy className="h-4 w-4" />}
               </button>
             </div>
+            {copyFailed && (
+              <p className="text-xs text-red-500 dark:text-red-400 text-center mt-2">
+                Couldn't copy the recovery key. Select the key and copy it yourself, then keep it somewhere safe.
+              </p>
+            )}
           </div>
           <div className="px-6 pb-8 pt-2">
             <button

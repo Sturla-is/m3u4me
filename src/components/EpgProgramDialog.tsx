@@ -84,12 +84,6 @@ export default function EpgProgramDialog({ programme, onClose, onAssignChannel }
             {formattedTime} &ndash; {formattedEndTime} ({formatDuration(durationMs)})
           </p>
           
-          {programme.subTitle && (
-            <h3 className="text-base font-medium text-gray-800 dark:text-gray-200 mb-2">
-              {programme.subTitle}
-            </h3>
-          )}
-          
           {programme.desc && (
             <div className="text-sm text-gray-700 dark:text-gray-400 space-y-2 mb-4 leading-relaxed whitespace-pre-wrap">
               {programme.desc}

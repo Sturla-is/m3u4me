@@ -103,13 +103,13 @@ let nextToastId = 0;
  * Thrown by apiClient's authFetch when a request comes back 401. Kept distinguishable from a
  * normal request failure so notifyError can ignore it below — the LockScreen that the matching
  * `auth-expired` event brings up already tells the user they need to log in again, and because
- * Toast only lives inside Dashboard (unmounted while locked), a toast set here would otherwise
+ * Toast only lives inside Dashboard/Home/Settings (unmounted while locked), a toast set here would otherwise
  * sit in the store and reappear stale the moment the user logs back in and Dashboard remounts.
  */
 export class AuthExpiredError extends Error {}
 
 /**
- * Shows a message in the global notification snackbar (rendered in Dashboard.tsx). Call this
+ * Shows a message in the global notification snackbar (<Toast />, mounted in Dashboard, Home and Settings). Call this
  * from a catch block — alongside the existing console.error — whenever a user-triggered save,
  * delete, reorder, or assignment fails, so the failure is visible instead of silently no-op-ing.
  */

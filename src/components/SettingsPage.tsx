@@ -5,7 +5,8 @@ import { api, clearSessionToken } from '../apiClient';
 import { ArrowLeft, Shield, Palette, Eye, EyeOff, Copy, Check, KeyRound, Lock, Unlock, Github, ArrowUpCircle, Info, Coffee } from 'lucide-react';
 import { Logo } from './Logo';
 import { useVersionInfo } from './AppInfo';
-import { contrastText } from '../store';
+import { contrastText, notifyError } from '../store';
+import Toast from './Toast';
 
 const ACCENT_PRESETS = [
   '#FF2960', '#FF5D29', '#22D5A7', '#29CBFF',
@@ -87,8 +88,11 @@ export default function SettingsPage() {
       } else {
         setSecurityError(res.error || 'Failed to set password');
       }
-    } catch {
-      setSecurityError('Connection error');
+    } catch (e) {
+      // authFetch doesn't throw for /api/auth/* responses (wrong password etc. come back as
+      // res.error above), so landing here means the server couldn't be reached at all.
+      console.error(e);
+      setSecurityError("Couldn't reach m3u4me. Check that it's still running, then try again.");
     } finally {
       setSavingPassword(false);
     }
@@ -108,18 +112,42 @@ export default function SettingsPage() {
       } else {
         setSecurityError(res.error || 'Failed to remove password');
       }
-    } catch {
-      setSecurityError('Connection error');
+    } catch (e) {
+      // authFetch doesn't throw for /api/auth/* responses (wrong password etc. come back as
+      // res.error above), so landing here means the server couldn't be reached at all.
+      console.error(e);
+      setSecurityError("Couldn't reach m3u4me. Check that it's still running, then try again.");
     } finally {
       setSavingPassword(false);
     }
   };
 
-  const handleCopyKey = async () => {
+  // Same copy-with-fallback as Home's copyLink and PlaylistEditor's copyText, kept in sync by
+  // hand. The app is usually opened over plain http://<LAN-IP>, which isn't a secure context, so
+  // navigator.clipboard doesn't exist there and the hidden-textarea execCommand path does the work.
+  const handleCopyKey = () => {
     if (!recoveryKey) return;
-    await navigator.clipboard.writeText(recoveryKey);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
+    const key = recoveryKey;
+    const flash = () => { setCopied(true); setTimeout(() => setCopied(false), 2000); };
+    // The browser's own copy error is technical, so show a plain message instead. The key is
+    // still on screen, so point the user at copying it by hand.
+    const showCopyFailed = () => notifyError(null, "Couldn't copy the recovery key. Select the key and copy it yourself, then keep it somewhere safe.");
+    if (navigator.clipboard && window.isSecureContext) {
+      navigator.clipboard.writeText(key).then(flash).catch(fallback);
+    } else {
+      fallback();
+    }
+    function fallback() {
+      const el = document.createElement('textarea');
+      el.value = key;
+      el.style.cssText = 'position:fixed;opacity:0;top:0;left:0;';
+      document.body.appendChild(el);
+      el.select();
+      // execCommand returns false (rather than throwing) when the copy is refused. Only show the
+      // checkmark on a real copy, since a false "copied" here could cost someone their recovery key.
+      try { if (document.execCommand('copy')) flash(); else showCopyFailed(); } catch (e) { console.error(e); showCopyFailed(); }
+      document.body.removeChild(el);
+    }
   };
 
   return (
@@ -533,6 +561,9 @@ export default function SettingsPage() {
 
         </div>
       </div>
+
+      {/* Error/info snackbar, same as Dashboard and Home, so failures here aren't silent */}
+      <Toast />
     </div>
   );
 }

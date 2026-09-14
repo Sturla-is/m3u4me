@@ -1,0 +1,14 @@
+services:
+  m3u4me:
+    build: .
+    container_name: m3u4me
+    # Change the left-hand number to use a different port on your machine.
+    ports:
+      - "8080:8080"
+    # Your playlists live here. Everything else in the container is disposable.
+    volumes:
+      - ./data:/app/data
+    environment:
+      - PORT=8080
+      - NODE_ENV=production
+    restart: unless-stopped

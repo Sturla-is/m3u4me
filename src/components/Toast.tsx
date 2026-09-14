@@ -47,6 +47,15 @@ export default function Toast() {
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
+      // Inside a text field, Cmd/Ctrl+Z should undo typing, not restore something deleted
+      // earlier — e.g. a password field on Settings while a carried-over undo snackbar shows.
+      const target = e.target as HTMLElement | null;
+      const isTextField = !!target && (
+        target.isContentEditable ||
+        target.tagName === 'TEXTAREA' ||
+        (target instanceof HTMLInputElement && !['checkbox', 'radio', 'button', 'submit', 'color'].includes(target.type))
+      );
+      if (isTextField) return;
       if ((e.metaKey || e.ctrlKey) && e.key === 'z' && undoEntry) {
         e.preventDefault();
         if (undoTimerRef.current) clearTimeout(undoTimerRef.current);

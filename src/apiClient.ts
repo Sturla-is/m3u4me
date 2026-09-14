@@ -112,7 +112,6 @@ export interface EpgProgramme {
   category: string | null;
   date: string | null;
   episodeNum: string | null;
-  subTitle: string | null;
   icon: string | null;
   rating: string | null;
   [key: string]: any;

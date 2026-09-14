@@ -140,7 +140,6 @@ interface ParsedEpgProgramme {
   category: string | null;
   date: string | null;
   episodeNum: string | null;
-  subTitle: string | null;
   icon: string | null;
   rating: string | null;
 }
@@ -196,23 +195,33 @@ async function fetchAndParseEpg(source: EpgSource): Promise<{ channels: ParsedEp
   const tv = parsed.tv || {};
   
   const getText = (val: any) => typeof val === 'object' && val !== null ? val['#text'] || '' : val;
-  
+
+  // Some providers put a programme's description in <sub-title> instead of <desc>. Fold the
+  // sub-title into the description ("sub-title / desc") so it shows up in the EPG guide and the
+  // /:shortId/epg export instead of being dropped. A sub-title that repeats the desc isn't doubled.
+  const mergeSubTitleIntoDesc = (rawSubTitle: string | undefined, rawDesc: string | undefined): string | null => {
+    // Trimmed here because the parser trims plain text but leaves CDATA content padded.
+    const subTitle = (rawSubTitle || '').trim();
+    const desc = (rawDesc || '').trim();
+    if (subTitle && desc && subTitle !== desc) return `${subTitle} / ${desc}`;
+    return desc || subTitle || null;
+  };
+
   const channels: ParsedEpgChannel[] = (tv.channel || []).map((c: any) => ({
     id: c['@_id'] || '',
     displayName: (c['display-name'] && c['display-name'][0] ? getText(c['display-name'][0]) : '') || '',
     icon: (c.icon && c.icon[0] ? c.icon[0]['@_src'] : null) || null,
   }));
-  
+
   const programmes: ParsedEpgProgramme[] = (tv.programme || []).map((p: any) => ({
     channel: p['@_channel'] || '',
     start: p['@_start'] || '',
     stop: p['@_stop'] || '',
     title: getText(p.title) || '',
-    desc: getText(p.desc) || null,
+    desc: mergeSubTitleIntoDesc(getText(p['sub-title']), getText(p.desc)),
     category: p.category && p.category.length > 0 ? getText(p.category[0]) : null,
     date: p.date ? String(p.date) : null,
     episodeNum: p['episode-num'] ? getText(p['episode-num']) : null,
-    subTitle: p['sub-title'] ? getText(p['sub-title']) : null,
     icon: (p.icon && p.icon[0] ? p.icon[0]['@_src'] : null) || null,
     rating: p.rating && p.rating.value ? String(p.rating.value) : null,
   }));
@@ -780,8 +789,9 @@ async function startServer() {
       const token = generateToken();
       activeSessions.add(token);
       res.json({ token });
-    } catch {
-      res.status(500).json({ error: 'Internal error' });
+    } catch (e) {
+      console.error(e);
+      res.status(500).json({ error: "Couldn't check the password. Try again, and restart m3u4me if it keeps happening." });
     }
   });
 
@@ -805,8 +815,11 @@ async function startServer() {
       const { hash: recoveryKeyHash, salt: recoveryKeySalt } = await hashPassword(recoveryKey);
       writeAuth({ passwordHash, passwordSalt, recoveryKeyHash, recoveryKeySalt });
       res.json({ recoveryKey: formatRecoveryKey(recoveryKey) });
-    } catch {
-      res.status(500).json({ error: 'Internal error' });
+    } catch (e) {
+      // This message is shown to the user as-is, so keep it plain. The usual cause is data/ not
+      // being writable.
+      console.error(e);
+      res.status(500).json({ error: "Couldn't save the password. Check that m3u4me can write to its data folder, then try again." });
     }
   });
 
@@ -837,8 +850,9 @@ async function startServer() {
       const token = generateToken();
       activeSessions.add(token);
       res.json({ token, recoveryKey: formatRecoveryKey(newRecoveryKey) });
-    } catch {
-      res.status(500).json({ error: 'Internal error' });
+    } catch (e) {
+      console.error(e);
+      res.status(500).json({ error: "Couldn't reset the password. Check that m3u4me can write to its data folder, then try again." });
     }
   });
 
@@ -854,8 +868,9 @@ async function startServer() {
       }
       deleteAuth();
       res.json({ success: true });
-    } catch {
-      res.status(500).json({ error: 'Internal error' });
+    } catch (e) {
+      console.error(e);
+      res.status(500).json({ error: "Couldn't remove the password. Check that m3u4me can write to its data folder, then try again." });
     }
   });
 

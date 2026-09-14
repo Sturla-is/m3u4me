@@ -152,7 +152,7 @@ function HealthDot({ status }: { status: HealthStatus }) {
 function SortableChannelItem({
   channel, isSelected, toggleSelection,
   onUpdate, onDelete, onToggleHide,
-  activeEditId, setActiveEditId, colWidths, isHighlighted, rowIndex, onRightClick, healthSt, tvgIdLabel,
+  activeEditId, setActiveEditId, colWidths, isHighlighted, rowIndex, onRightClick, healthSt, tvgIdLabel, isSaving,
 }: {
   key?: string | number;
   channel: Channel;
@@ -169,6 +169,7 @@ function SortableChannelItem({
   onRightClick: (e: React.MouseEvent) => void;
   healthSt?: HealthEntry;
   tvgIdLabel?: { displayName: string; sourceName: string };
+  isSaving?: boolean;
 }) {
   const { logoBgColor, hideUrls, accentColor, is24Hour } = useStore();
   const { attributes, listeners, setNodeRef, transform, transition } = useSortable({ id: channel.id });
@@ -200,7 +201,7 @@ function SortableChannelItem({
     if (e.key === 'Escape') { setEditingField(null); if (activeEditId === channel.id) setActiveEditId(null); }
   };
 
-  const rowBase = 'flex items-center h-14 border-b border-gray-100 dark:border-white/6 group transition-colors';
+  const rowBase = 'relative flex items-center h-14 border-b border-gray-100 dark:border-white/6 group transition-colors';
   const isEven = rowIndex % 2 === 0;
   const rowBg = channel.isHidden
     ? 'bg-red-50 dark:bg-red-950/25 amoled:dark:bg-red-950/35'
@@ -373,6 +374,14 @@ function SortableChannelItem({
           <Trash2 className="h-3.5 w-3.5" />
         </button>
       </div>
+
+      {/* Saving indicator — a save (rename, hide toggle, URL/TVG-ID edit) round-trips to
+          the backend and then waits on a full channels refetch before the row shows the
+          new value, which used to read as a stall. This indeterminate bar (styled after
+          Windows Explorer's copy-progress bar) covers the row for that stretch instead. */}
+      {isSaving && (
+        <div className="md-progress" style={{ color: accentColor, backgroundColor: accentAlpha(accentColor, '20') }} />
+      )}
     </div>
   );
 }
@@ -405,6 +414,11 @@ export default function PlaylistEditor({ playlistId }: { playlistId: string }) {
   const [contextMenu, setContextMenu] = useState<{ channelId: string; x: number; y: number } | null>(null);
   const contextMenuRef = useRef<HTMLDivElement>(null);
   const pendingInsert = useRef<{ newId: string; insertAfterIndex: number } | null>(null);
+  // Channel ids with an in-flight single-field save (rename, hide toggle, URL/TVG-ID edit),
+  // so their row can show a "saving" indicator instead of just sitting on stale data.
+  const [savingIds, setSavingIds] = useState<Set<string>>(new Set());
+  const markSaving = (id: string) => setSavingIds(prev => new Set(prev).add(id));
+  const clearSaving = (id: string) => setSavingIds(prev => { const next = new Set(prev); next.delete(id); return next; });
   const [healthStatus, setHealthStatus] = useState<Map<string, HealthEntry>>(new Map());
   const [healthProgress, setHealthProgress] = useState<{ done: number; total: number } | null>(null);
   const [showHealthMenu, setShowHealthMenu] = useState(false);
@@ -635,13 +649,26 @@ export default function PlaylistEditor({ playlistId }: { playlistId: string }) {
   };
 
   const handleChannelUpdate = async (id: string, field: string, value: string) => {
-    try { await api.updateChannel(playlistId, id, { [field]: value.trim() || null }); triggerRefresh(); }
-    catch (e) { console.error(e); notifyError(e, 'Failed to save channel.'); }
+    markSaving(id);
+    try {
+      await api.updateChannel(playlistId, id, { [field]: value.trim() || null });
+      // Wait for this component's own channels to actually refetch — not just fire the
+      // event and move on — so the saving indicator stays up until the row has the new
+      // value to show, rather than clearing early onto stale data.
+      await refetchChannels();
+      triggerRefresh();
+    } catch (e) { console.error(e); notifyError(e, 'Failed to save channel.'); }
+    finally { clearSaving(id); }
   };
 
   const handleToggleHide = async (id: string, current: boolean) => {
-    try { await api.updateChannel(playlistId, id, { isHidden: !current }); triggerRefresh(); }
-    catch (e) { console.error(e); notifyError(e, 'Failed to update channel.'); }
+    markSaving(id);
+    try {
+      await api.updateChannel(playlistId, id, { isHidden: !current });
+      await refetchChannels();
+      triggerRefresh();
+    } catch (e) { console.error(e); notifyError(e, 'Failed to update channel.'); }
+    finally { clearSaving(id); }
   };
 
   const handleSingleDelete = async (id: string) => {
@@ -1072,6 +1099,7 @@ export default function PlaylistEditor({ playlistId }: { playlistId: string }) {
                     onRightClick={e => { e.preventDefault(); setContextMenu({ channelId: channel.id, x: e.clientX, y: e.clientY }); }}
                     healthSt={healthStatus.get(channel.id)}
                     tvgIdLabel={channel.tvgId ? tvgIdLabels[channel.tvgId] : undefined}
+                    isSaving={savingIds.has(channel.id)}
                   />
                 ))}
               </SortableContext>
